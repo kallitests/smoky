@@ -1,0 +1,184 @@
+name: Smoky — Playwright Smoke Tests
+
+# =============================================================================
+# Trigger: repository_dispatch event sent by the Smoky Python agent.
+# The agent encodes the .feature file in base64 and sends it in the payload.
+# This workflow decodes it, runs the tests, and uploads results as artifacts.
+# =============================================================================
+
+on:
+  repository_dispatch:
+    types: [smoky-trigger]
+
+  # Allow manual trigger for debugging
+  workflow_dispatch:
+    inputs:
+      issue_key:
+        description: "Jira issue key (e.g. PROJ-142)"
+        required: true
+        default: "PROJ-001"
+      environment:
+        description: "Target environment"
+        required: true
+        default: "staging"
+        type: choice
+        options: [staging, preprod, production]
+
+env:
+  ISSUE_KEY:        ${{ github.event.client_payload.issue_key || github.event.inputs.issue_key }}
+  FEATURE_FILENAME: ${{ github.event.client_payload.feature_file_name || 'manual.feature' }}
+  FEATURE_B64:      ${{ github.event.client_payload.feature_file_b64 || '' }}
+  PRIORITY:         ${{ github.event.client_payload.priority || 'Major' }}
+  ENVIRONMENT:      ${{ github.event.client_payload.environment || github.event.inputs.environment || 'staging' }}
+
+jobs:
+  smoke-tests:
+    name: "Smoky · ${{ github.event.client_payload.issue_key || github.event.inputs.issue_key }}"
+    runs-on: ubuntu-latest
+    timeout-minutes: 15
+
+    steps:
+      # -----------------------------------------------------------------------
+      # 1. Checkout the Smoky repo
+      # -----------------------------------------------------------------------
+      - name: Checkout
+        uses: actions/checkout@v4
+
+      # -----------------------------------------------------------------------
+      # 2. Decode and write the .feature file sent by the agent
+      # -----------------------------------------------------------------------
+      - name: Write feature file
+        run: |
+          mkdir -p tests/features
+          if [ -n "$FEATURE_B64" ]; then
+            echo "$FEATURE_B64" | base64 --decode > "tests/features/$FEATURE_FILENAME"
+            echo "✅ Feature file written: tests/features/$FEATURE_FILENAME"
+            cat "tests/features/$FEATURE_FILENAME"
+          else
+            echo "⚠️ No feature file in payload — using existing features"
+          fi
+
+      # -----------------------------------------------------------------------
+      # 3. Set up Node.js (cached)
+      # -----------------------------------------------------------------------
+      - name: Setup Node.js
+        uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: "npm"
+
+      # -----------------------------------------------------------------------
+      # 4. Install Node dependencies
+      # -----------------------------------------------------------------------
+      - name: Install dependencies
+        run: npm ci
+
+      # -----------------------------------------------------------------------
+      # 5. Install Playwright browsers
+      # -----------------------------------------------------------------------
+      - name: Install Playwright browsers
+        run: npx playwright install chromium --with-deps
+
+      # -----------------------------------------------------------------------
+      # 6. Run Playwright smoke tests
+      #    Filter by @smoke tag + issue key tag to run only this ticket's tests
+      # -----------------------------------------------------------------------
+      - name: Run smoke tests
+        id: run_tests
+        env:
+          BASE_URL: ${{ secrets[format('{0}_BASE_URL', env.ENVIRONMENT)] || secrets.STAGING_BASE_URL }}
+          ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
+        run: |
+          npx playwright test \
+            --grep "@smoke.*@${{ env.ISSUE_KEY }}" \
+            --project=chromium \
+            --reporter=html,json \
+            --output=test-results
+        continue-on-error: true  # Don't fail the job here — we publish results first
+
+      # -----------------------------------------------------------------------
+      # 7. Build smoky-results.json for the agent to consume
+      # -----------------------------------------------------------------------
+      - name: Build results JSON
+        if: always()
+        run: |
+          node -e "
+          const fs = require('fs');
+          const raw = fs.existsSync('test-results/results.json')
+            ? JSON.parse(fs.readFileSync('test-results/results.json', 'utf8'))
+            : { stats: { expected: 0, unexpected: 0 }, suites: [] };
+
+          const passed  = raw.stats?.expected  || 0;
+          const failed  = raw.stats?.unexpected || 0;
+          const duration = raw.stats?.duration  || 0;
+
+          const scenarios = (raw.suites || []).flatMap(s =>
+            (s.specs || []).map(spec => ({
+              name:        spec.title,
+              status:      spec.ok ? 'passed' : 'failed',
+              duration_ms: spec.tests?.[0]?.results?.[0]?.duration || 0,
+              error:       spec.ok ? null : (spec.tests?.[0]?.results?.[0]?.error?.message || 'unknown'),
+            }))
+          );
+
+          const results = {
+            issue_key:   process.env.ISSUE_KEY,
+            environment: process.env.ENVIRONMENT,
+            passed,
+            failed,
+            total:       passed + failed,
+            duration_ms: duration,
+            conclusion:  failed === 0 ? 'success' : 'failure',
+            scenarios,
+            report_url:  'https://github.com/${{ github.repository }}/actions/runs/${{ github.run_id }}',
+          };
+
+          fs.mkdirSync('smoky-results', { recursive: true });
+          fs.writeFileSync('smoky-results/results.json', JSON.stringify(results, null, 2));
+          console.log('Results:', JSON.stringify(results, null, 2));
+          "
+
+      # -----------------------------------------------------------------------
+      # 8. Upload HTML report as artifact (viewable in GitHub UI)
+      # -----------------------------------------------------------------------
+      - name: Upload HTML report
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: playwright-report-${{ env.ISSUE_KEY }}
+          path: playwright-report/
+          retention-days: 14
+
+      # -----------------------------------------------------------------------
+      # 9. Upload smoky-results.json (consumed by the Python agent)
+      # -----------------------------------------------------------------------
+      - name: Upload smoky-results
+        uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: smoky-results
+          path: smoky-results/results.json
+          retention-days: 7
+
+      # -----------------------------------------------------------------------
+      # 10. Upload screenshots and videos on failure
+      # -----------------------------------------------------------------------
+      - name: Upload failure artifacts
+        uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: failure-artifacts-${{ env.ISSUE_KEY }}
+          path: |
+            test-results/**/*.png
+            test-results/**/*.webm
+            test-results/**/*.zip
+          retention-days: 7
+
+      # -----------------------------------------------------------------------
+      # 11. Fail the job if tests failed (after artifacts are uploaded)
+      # -----------------------------------------------------------------------
+      - name: Assert test outcome
+        if: steps.run_tests.outcome == 'failure'
+        run: |
+          echo "❌ Smoke tests FAILED for $ISSUE_KEY"
+          exit 1

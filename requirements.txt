@@ -1,0 +1,26 @@
+# Smoky Python dependencies
+
+# Core
+anthropic>=0.28.0
+langchain>=0.2.0
+langchain-anthropic>=0.1.0
+langgraph>=0.1.0
+
+# Jira
+requests>=2.32.0
+atlassian-python-api>=3.41.0
+
+# Scheduler (polling mode)
+apscheduler>=3.10.0
+
+# Web server (webhook mode — Phase 2)
+fastapi>=0.111.0
+uvicorn>=0.30.0
+
+# Evaluation
+deepeval>=0.21.0
+langsmith>=0.1.0
+
+# Utilities
+python-dotenv>=1.0.0
+pydantic>=2.7.0

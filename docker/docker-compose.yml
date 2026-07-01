@@ -1,0 +1,57 @@
+# =============================================================================
+# docker-compose.yml — Smoky local development
+# =============================================================================
+# Runs the full Smoky stack locally for development and testing.
+# Production deployments use GitHub Actions — this is for local iteration only.
+#
+# Usage:
+#   docker compose up agent       # Start the Jira watcher agent
+#   docker compose up playwright  # Run Playwright tests locally
+#   docker compose up smoky       # Run a single ticket end-to-end
+# =============================================================================
+
+services:
+
+  # ---------------------------------------------------------------------------
+  # agent — Jira watcher + LangGraph pipeline (Python)
+  # ---------------------------------------------------------------------------
+  agent:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile.agent
+    env_file: ../.env
+    volumes:
+      - ../agent:/app/agent
+      - ../prompts:/app/prompts
+      - ../logs:/app/logs
+    command: python -m agent.jira_watcher
+
+  # ---------------------------------------------------------------------------
+  # playwright — Dockerized Playwright MCP test runner
+  # ---------------------------------------------------------------------------
+  playwright:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
+    env_file: ../.env
+    volumes:
+      - ../tests:/app/tests
+      - ../playwright-report:/app/playwright-report
+      - ../test-results:/app/test-results
+    environment:
+      - CI=true
+    command: npx playwright test --grep "@smoke" --project=chromium
+
+  # ---------------------------------------------------------------------------
+  # smoky — Run a single ticket end-to-end (for manual testing)
+  # Usage: ISSUE_KEY=PROJ-42 docker compose run smoky
+  # ---------------------------------------------------------------------------
+  smoky:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile.agent
+    env_file: ../.env
+    volumes:
+      - ../agent:/app/agent
+      - ../prompts:/app/prompts
+    command: python -c "from agent.smoky_agent import run_smoky; import os; run_smoky(os.environ['ISSUE_KEY'])"

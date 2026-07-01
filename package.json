@@ -1,0 +1,20 @@
+{
+  "name": "smoky-playwright",
+  "version": "1.0.0",
+  "description": "Smoky — Autonomous smoke test agent powered by Claude + Playwright MCP",
+  "scripts": {
+    "test": "playwright test",
+    "test:smoke": "playwright test --grep @smoke",
+    "test:headed": "playwright test --headed",
+    "test:ui": "playwright test --ui",
+    "test:report": "playwright show-report",
+    "agent": "python -m agent.jira_watcher",
+    "smoky": "python -c \"from agent.smoky_agent import run_smoky; import sys; run_smoky(sys.argv[1])\"",
+    "env:check": "python utils/env_check.py"
+  },
+  "devDependencies": {
+    "@playwright/test": "^1.44.0",
+    "@types/node": "^20.0.0",
+    "typescript": "^5.4.0"
+  }
+}

@@ -1,0 +1,566 @@
+================================================================================
+  SMOKY — TECHNICAL SPEC v1.0
+  Autonomous Claude smoke test agent · Routine Agent
+  Author: Kallitests
+================================================================================
+
+VISION
+------
+Smoky is an autonomous Claude agent that continuously monitors Jira
+tickets, generates Gherkin scenarios from User Stories, runs them in a
+dockerized Playwright MCP pipeline via GitHub Actions, and publishes the
+results to Power BI + Slack — with no human intervention.
+
+A dev creates a ticket. Smoky does the rest.
+
+--------------------------------------------------------------------------------
+WHY THIS PROJECT EXISTS (STAR)
+--------------------------------------------------------------------------------
+
+  Situation
+  ─────────
+  Most teams ship features faster than they can cover them. Smoke tests are
+  the first line of defense before every release, yet they are almost always
+  the first thing to rot: QA writes them by hand, developers forget to
+  update them, and by the time a critical login or checkout flow breaks in
+  staging, it is already too late — or nobody wrote the test for it in the
+  first place. Jira fills up with tickets nobody has time to fully verify,
+  and "we'll add tests later" quietly becomes "we never did."
+
+  Task
+  ────
+  Build an agent that removes the bottleneck entirely: turn every Jira
+  ticket into a verified, running smoke test — with no manual scripting, no
+  waiting on QA bandwidth, and no human forgetting to close the loop. The
+  agent had to be trustworthy enough to run unattended, which meant it also
+  had to test itself.
+
+  Action
+  ──────
+  Smoky was built as an autonomous Claude agent that watches Jira, converts
+  User Stories into Gherkin scenarios, self-validates its own output for
+  hallucinations and coverage gaps, triggers a Dockerized Playwright MCP
+  pipeline via GitHub Actions, and reports results in plain language to
+  Slack, Power BI, and back onto the ticket itself — end to end, zero human
+  intervention. On top of that, the agent's own output is continuously
+  evaluated with DeepEval, RAGAS, and Promptfoo, so the AI generating the
+  tests is held to the same rigor as the tests it generates.
+
+  Result — pain points solved
+  ────────────────────────────
+    | Pain point (before)                          | What Smoky changes    |
+    |-----------------------------------------------|-----------------------|
+    | Smoke tests written manually, days late        | Tests exist within   |
+    |                                                 | minutes of ticket    |
+    |                                                 | readiness             |
+    | QA time burned on repetitive scripting          | QA time redirected   |
+    |                                                 | to exploratory       |
+    |                                                 | testing               |
+    | Regressions caught late, in staging or prod     | Regressions caught   |
+    |                                                 | at ticket level      |
+    | No visibility into coverage or flakiness trends | Live Power BI        |
+    |                                                 | dashboard             |
+    | "Is it tested?" answered with a guess           | Answered by a Slack  |
+    |                                                 | report + Jira status |
+    | AI-generated content trusted blindly            | AI output scored,    |
+    |                                                 | gated and audited     |
+
+  Value delivered, by audience
+  ─────────────────────────────
+    - IT / Engineering    : one less manual step in the delivery pipeline,
+                             dockerized and CI-native, plugs into GitHub
+                             Actions without touching existing infrastructure.
+    - Business (PO/PM/CEO): faster time-to-confidence on every release,
+                             fewer production incidents, and a dashboard
+                             that turns "is quality okay?" into a live number.
+    - QA team              : freed from repetitive scripting to focus on
+                             high-value testing, with an AI teammate that
+                             flags what it is unsure about instead of
+                             guessing silently.
+
+  This project is a working answer to a question every engineering org
+  eventually asks: can we trust an AI to test our software, and how do we
+  prove it?
+
+--------------------------------------------------------------------------------
+GLOBAL WORKFLOW — OVERVIEW
+--------------------------------------------------------------------------------
+
+  ┌─────────────────────────────────────────────────────────────────────────┐
+  │                         SMOKY — FULL FLOW                              │
+  │                                                                         │
+  │  ┌──────────┐    ┌──────────────┐    ┌──────────────────────────────┐  │
+  │  │  DEV     │    │   JIRA       │    │   SMOKY AGENT (Claude)       │  │
+  │  │          │───▶│  New         │───▶│                              │  │
+  │  │  Creates │    │  ticket      │    │  1. Detects the ticket       │  │
+  │  │  Jira    │    │  "Ready for  │    │  2. Reads the User Story     │  │
+  │  │  ticket  │    │   Smoky"     │    │  3. Generates Gherkin        │  │
+  │  └──────────┘    └──────────────┘    │     scenarios                │  │
+  │                                      │  4. Validates consistency    │  │
+  │                                      │  5. Triggers GitHub Actions  │  │
+  │                                      └──────────────┬───────────────┘  │
+  │                                                     │                  │
+  │                                                     ▼                  │
+  │                          ┌──────────────────────────────────────────┐  │
+  │                          │   GITHUB ACTIONS — CI/CD PIPELINE        │  │
+  │                          │                                          │  │
+  │                          │   Docker ──▶ Playwright MCP ──▶ Tests   │  │
+  │                          │                                          │  │
+  │                          └──────────────────┬───────────────────────┘  │
+  │                                             │                          │
+  │                                             ▼                          │
+  │              ┌──────────────────────────────────────────────────────┐  │
+  │              │              OUTPUTS                                  │  │
+  │              │                                                       │  │
+  │              │   Power BI Dashboard ◀── JSON results                │  │
+  │              │   Slack #smoky-results ◀── NL report (Claude)        │  │
+  │              │   Jira ticket ◀── Status updated                     │  │
+  │              └──────────────────────────────────────────────────────┘  │
+  └─────────────────────────────────────────────────────────────────────────┘
+
+--------------------------------------------------------------------------------
+DETAILED WORKFLOW DIAGRAM — STEP BY STEP
+--------------------------------------------------------------------------------
+
+STEP 1 — JIRA TICKET DETECTION
+───────────────────────────────
+
+  Trigger: Jira label "smoky-ready" OR transition to status
+                "Ready for Smoke Test"
+
+  Mechanism:
+    ┌─────────────────────────────────────────────────────────────┐
+    │  Python scheduler (cron every 5 min)                        │
+    │  OR Jira webhook → FastAPI endpoint (real time)              │
+    │                                                             │
+    │  Jira API v3                                                │
+    │    GET /rest/api/3/search                                   │
+    │    JQL: project = {PROJECT} AND labels = "smoky-ready"      │
+    │          AND status != "Smoke Done"                         │
+    └─────────────────────────────────────────────────────────────┘
+
+  Data extracted from the ticket:
+    - issue_key        (e.g. PROJ-142)
+    - summary          (User Story title)
+    - description      (body: As a / I want / So that)
+    - acceptance_criteria
+    - labels           (smoke, regression, e2e…)
+    - priority         (Blocker, Critical, Major, Minor)
+    - components       (affected application module)
+    - attachments      (mockups, screenshots if any)
+
+──────────────────────────────────────────────────────────────────────────────
+
+STEP 2 — GHERKIN GENERATION BY CLAUDE
+─────────────────────────────────────
+
+  Input: raw Jira ticket content (JSON)
+  Output: structured Gherkin .feature file
+
+  Claude system prompt (simplified):
+  ┌─────────────────────────────────────────────────────────────────────┐
+  │  You are Smoky, a QA expert specialized in Playwright smoke tests.  │
+  │  From the User Story below, generate Gherkin scenarios in           │
+  │  English.                                                            │
+  │                                                                     │
+  │  Rules:                                                             │
+  │  - 1 Feature per ticket                                             │
+  │  - At least 1 Happy Path scenario required                          │
+  │  - At least 1 negative-case scenario                                │
+  │  - Use the tags: @smoke @critical @{issue_key}                      │
+  │  - Selectors: prefer data-test attributes                           │
+  │  - No hallucinations: if info is missing, add a comment             │
+  │    # TODO: clarify with the team                                    │
+  │  - Format: strict Gherkin (Feature / Scenario / Given When Then)    │
+  └─────────────────────────────────────────────────────────────────────┘
+
+  Example output for PROJ-142:
+
+    @smoke @critical @PROJ-142
+    Feature: User authentication — Login flow
+      As a registered user
+      I want to log in with valid credentials
+      So that I can access my dashboard
+
+      Scenario: Successful login with valid credentials
+        Given I am on the login page
+        When I fill "[data-test='username']" with "standard_user"
+        And I fill "[data-test='password']" with "secret_sauce"
+        And I click "[data-test='login-button']"
+        Then I should be redirected to "/inventory.html"
+        And I should see the product list
+
+      Scenario: Login fails with invalid password
+        Given I am on the login page
+        When I fill "[data-test='username']" with "standard_user"
+        And I fill "[data-test='password']" with "wrong_password"
+        And I click "[data-test='login-button']"
+        Then I should see an error message containing "do not match"
+        And I should remain on the login page
+
+  Post-generation validation (Claude self-critique):
+    - Gherkin/User Story consistency: score 0–10
+    - Hallucination detection: invented selectors flagged
+    - Completeness: Happy Path + negative case present?
+    - Format compliance: valid Feature/Scenario/Given/When/Then
+
+──────────────────────────────────────────────────────────────────────────────
+
+STEP 3 — GITHUB ACTIONS TRIGGER
+────────────────────────────────
+
+  Mechanism: GitHub REST API — repository_dispatch event
+
+  ┌────────────────────────────────────────────────────────────────────┐
+  │  POST /repos/{owner}/{repo}/dispatches                             │
+  │  {                                                                 │
+  │    "event_type": "smoky-trigger",                                  │
+  │    "client_payload": {                                             │
+  │      "issue_key": "PROJ-142",                                      │
+  │      "feature_file": "proj_142_login.feature",                    │
+  │      "priority": "critical",                                       │
+  │      "environment": "staging"                                      │
+  │    }                                                               │
+  │  }                                                                 │
+  └────────────────────────────────────────────────────────────────────┘
+
+  GitHub Actions workflow (.github/workflows/smoky.yml):
+
+    on:
+      repository_dispatch:
+        types: [smoky-trigger]
+
+    jobs:
+      smoke-tests:
+        runs-on: ubuntu-latest
+        steps:
+          - Checkout repo
+          - Write feature file (from payload)
+          - Build Docker image (Playwright MCP)
+          - Run Playwright MCP tests
+          - Export results to JSON
+          - Upload artifacts
+          - Trigger Power BI refresh
+          - Notify Slack
+
+──────────────────────────────────────────────────────────────────────────────
+
+STEP 4 — DOCKERIZED PLAYWRIGHT MCP EXECUTION
+──────────────────────────────────────────────
+
+  Docker image: mcr.microsoft.com/playwright:v1.44.0-jammy
+
+  Smoky Dockerfile:
+  ┌────────────────────────────────────────────────────────────────────┐
+  │  FROM mcr.microsoft.com/playwright:v1.44.0-jammy                  │
+  │  WORKDIR /app                                                      │
+  │  COPY package*.json ./                                             │
+  │  RUN npm ci                                                        │
+  │  COPY . .                                                          │
+  │  ENV PLAYWRIGHT_MCP=true                                           │
+  │  ENV BASE_URL=${BASE_URL}                                          │
+  │  CMD ["npx", "playwright", "test", "--grep", "@smoke"]            │
+  └────────────────────────────────────────────────────────────────────┘
+
+  Playwright MCP config:
+    - The Gherkin scenario is converted into MCP instructions by Claude
+    - Claude drives the browser via MCP tools (navigate, click,
+      fill, screenshot, assert)
+    - Each Gherkin step = one MCP tool call
+
+  Gherkin → MCP flow:
+  ┌────────────────────────────────────────────────────────────────────┐
+  │  "Given I am on the login page"                                    │
+  │    → mcp.navigate("https://staging.app.com/login")                │
+  │                                                                    │
+  │  "When I fill [data-test='username'] with 'standard_user'"        │
+  │    → mcp.fill("[data-test='username']", "standard_user")          │
+  │                                                                    │
+  │  "Then I should see the product list"                              │
+  │    → mcp.assert_visible(".inventory_list")                        │
+  │    → mcp.screenshot("post_login.png")                             │
+  └────────────────────────────────────────────────────────────────────┘
+
+  Generated results:
+    - smoky-results.json   (pass/fail per scenario + duration + logs)
+    - screenshots/         (captures on failure)
+    - videos/              (recordings on failure)
+    - traces/              (Playwright trace .zip)
+    - playwright-report/   (HTML report)
+
+──────────────────────────────────────────────────────────────────────────────
+
+STEP 5 — OUTPUTS: POWER BI + SLACK + JIRA
+───────────────────────────────────────────
+
+  A) Power BI Dashboard
+  ─────────────────────
+  Mechanism: Push JSON → Azure Blob Storage OR Power BI dataset API
+
+  Metrics displayed:
+    - Overall success rate (% pass/fail)
+    - Rate per ticket / per application module
+    - 30-day trend (regression detected?)
+    - Average execution duration
+    - Most unstable tickets (flaky score)
+    - History per environment (staging / preprod / prod)
+
+  Refresh:
+    POST https://api.powerbi.com/v1.0/myorg/datasets/{id}/refreshes
+
+  B) Slack — Natural-language report
+  ────────────────────────────────────
+  Claude generates the Slack message from the results JSON.
+
+  Slack message template:
+
+  ┌────────────────────────────────────────────────────────────────────┐
+  │  *Smoky* | PROJ-142 | Login flow                                  │
+  │                                                                    │
+  │  Status : ✅ 2/2 scenarios passed  (or ❌ 1/2 failed)             │
+  │  Duration : 38 seconds                                            │
+  │  Env    : Staging                                                  │
+  │                                                                    │
+  │  Results:                                                          │
+  │  ✅ Successful login with valid credentials — 18s                 │
+  │  ✅ Login fails with invalid password — 20s                       │
+  │                                                                    │
+  │  [View full report] [Open Jira ticket]                            │
+  │                                                                    │
+  │  (On failure: Claude's NL diagnosis + attached screenshot)        │
+  └────────────────────────────────────────────────────────────────────┘
+
+  Channel: #smoky-results (or #smoky-{project} per project)
+
+  C) Automatic Jira update
+  ──────────────────────────
+  On success → transition ticket to "Smoke Done" + comment
+  On failure  → transition to "Smoke Failed" + NL comment + report link
+  Always     → add label "smoky-ran-{date}"
+
+──────────────────────────────────────────────────────────────────────────────
+
+STEP 6 — ERROR HANDLING (ROBUSTNESS)
+──────────────────────────────────────
+
+  | Error scenario                | Smoky behavior                        |
+  |------------------------------|---------------------------------------|
+  | Poorly written Jira ticket   | Claude requests clarifications        |
+  |                              | via Jira comment + Slack alert        |
+  | Hallucination detected       | Scenario quarantined + flagged        |
+  |                              | # SMOKY_UNCERTAIN in the .feature     |
+  | LLM timeout (>30s)           | Retry x3 then Slack alert             |
+  | GitHub Actions failure       | Automatic re-run x1 then escalation   |
+  | Flaky test (>2 unstable runs)| Marked @flaky + separate report       |
+  | Playwright timeout           | Screenshot + Claude NL diagnosis      |
+  | Power BI API down            | CSV fallback in CI artifacts          |
+  | Slack webhook down           | Email fallback to configured address  |
+
+--------------------------------------------------------------------------------
+TECH STACK
+--------------------------------------------------------------------------------
+
+  Component               | Technology
+  ───────────────────────|──────────────────────────────────────────
+  LLM agent               | Claude (Anthropic API) — claude-sonnet-4-6
+  Orchestration            | LangChain · LangGraph (state graph)
+  Jira monitoring          | Python · Jira API v3 · FastAPI (webhook)
+  Scheduler                | APScheduler (5 min cron) OR Jira webhook
+  Gherkin generation        | Claude + structured prompt engineering
+  Validation                | Claude self-critique + DeepEval (consistency)
+  CI/CD                     | GitHub Actions (repository_dispatch)
+  Test execution             | Playwright MCP · TypeScript
+  Containerization           | Docker · mcr.microsoft.com/playwright
+  Reporting                 | Power BI API · Azure Blob Storage
+  Notifications              | Slack API (Incoming Webhooks)
+  Secrets management          | GitHub Secrets · .env
+  Observability               | LangSmith (LLM traces) · Playwright Trace
+
+--------------------------------------------------------------------------------
+REPO FILE ARCHITECTURE
+--------------------------------------------------------------------------------
+
+  smoky/
+  ├── agent/
+  │   ├── smoky_agent.py          # Main LangGraph agent
+  │   ├── jira_watcher.py         # Ticket detection + scheduler
+  │   ├── gherkin_generator.py    # Gherkin generation + validation
+  │   ├── github_dispatcher.py    # GitHub Actions trigger
+  │   └── report_publisher.py     # Power BI + Slack + Jira update
+  │
+  ├── prompts/
+  │   ├── system_prompt.txt       # Smoky system prompt
+  │   ├── gherkin_template.txt    # Generation template
+  │   └── slack_report.txt        # Slack NL report template
+  │
+  ├── tests/
+  │   ├── features/               # Dynamically generated .feature files
+  │   ├── step_definitions/       # Playwright MCP steps
+  │   └── mcp_runner.ts           # Playwright MCP runner
+  │
+  ├── docker/
+  │   ├── Dockerfile              # Playwright image
+  │   └── docker-compose.yml
+  │
+  ├── .github/
+  │   └── workflows/
+  │       └── smoky.yml           # CI/CD pipeline
+  │
+  ├── dashboard/
+  │   └── smoky_powerbi.json      # Power BI dataset template
+  │
+  ├── utils/
+  │   ├── env_check.py            # Pre-launch validator
+  │   └── test_data.py            # Centralized test data
+  │
+  ├── .env.example
+  ├── config.yml                  # Jira projects + envs config
+  ├── requirements.txt
+  └── README.md
+
+--------------------------------------------------------------------------------
+ENVIRONMENT VARIABLES (.env)
+--------------------------------------------------------------------------------
+
+  # Anthropic
+  ANTHROPIC_API_KEY=sk-ant-...
+
+  # Jira
+  JIRA_BASE_URL=https://yourcompany.atlassian.net
+  JIRA_EMAIL=you@company.com
+  JIRA_API_TOKEN=...
+  JIRA_PROJECT_KEY=PROJ
+  JIRA_SMOKY_LABEL=smoky-ready
+
+  # GitHub
+  GITHUB_TOKEN=ghp_...
+  GITHUB_REPO=kallitests/smoky
+
+  # Target application
+  BASE_URL_STAGING=https://staging.app.com
+  BASE_URL_PREPROD=https://preprod.app.com
+
+  # Slack
+  SLACK_WEBHOOK_URL=https://hooks.slack.com/services/...
+  SLACK_CHANNEL=#smoky-results
+
+  # Power BI
+  POWERBI_DATASET_ID=...
+  POWERBI_WORKSPACE_ID=...
+  POWERBI_ACCESS_TOKEN=...
+
+  # LangSmith (observability)
+  LANGCHAIN_API_KEY=...
+  LANGCHAIN_PROJECT=smoky-agent
+
+--------------------------------------------------------------------------------
+ROADMAP — DEVELOPMENT PHASES
+--------------------------------------------------------------------------------
+
+  Phase 1 — MVP (4–6 weeks)
+  ──────────────────────────────
+  ✓ Jira ticket detection via polling (5 min cron)
+  ✓ Claude Gherkin generation (Happy Path + 1 negative case)
+  ✓ GitHub Actions trigger via repository_dispatch
+  ✓ Dockerized Playwright MCP execution
+  ✓ Simple text Slack notification
+  ✓ Jira status update
+
+  Phase 2 — Consolidation (6–10 weeks)
+  ─────────────────────────────────────────
+  ○ Real-time Jira webhook (replaces polling)
+  ○ DeepEval Gherkin validation (consistency score)
+  ○ Full Power BI dashboard
+  ○ Robust error handling (retry, fallback)
+  ○ Natural-language Slack report (Claude)
+  ○ Flakiness detection (multi-run)
+
+  Phase 3 — Intelligence (10–16 weeks)
+  ─────────────────────────────────────────
+  ○ Parallel multi-ticket processing (LangGraph parallel nodes)
+  ○ Benchmarks: Claude vs GPT-4o on Gherkin quality
+  ○ Learning: Smoky remembers patterns per module
+  ○ Prompt regression: alert if Gherkin quality drops
+  ○ Smoky REST API: trigger via curl, Postman, external webhook
+  ○ Minimal web interface: real-time run status
+
+  Phase 4 — AI Testing (testing Smoky's own AI)
+  ─────────────────────────────────────────────
+  Smoky isn't just a tool that tests applications — it's an AI agent, which
+  means Smoky itself has to be tested. A traditional test suite checks that
+  code does what it's supposed to do; an LLM-based agent needs a different
+  kind of scrutiny, because its output is non-deterministic, can drift over
+  time, and can fail silently — a wrong Gherkin scenario looks exactly as
+  plausible as a correct one until someone runs it.
+
+  Why AI testing is mandatory here, not optional:
+    - Non-determinism: the same Jira ticket can produce slightly different
+      Gherkin output on two separate runs. LLM output must be evaluated on
+      quality ranges, not exact equality.
+    - Hallucination risk: Claude could invent a selector, an assumed field,
+      or a business rule that was never in the User Story.
+    - Silent quality drift: a prompt tweak or model version change can
+      quietly degrade Gherkin quality with no error thrown.
+    - Trust in an unattended agent: Smoky runs with zero human review of
+      generated scenarios before they hit CI — so its output quality has
+      to be checked automatically, on every run.
+    - Compounding downstream cost: a bad Gherkin scenario gets committed,
+      run repeatedly in CI, and can create false confidence ("tests are
+      green") while covering the wrong behavior entirely.
+
+  Planned AI testing stack:
+    ○ DeepEval        — scores each generated .feature file against the
+                         source User Story: relevance, faithfulness (no
+                         hallucinated selectors/steps), completeness.
+                         Runs as an automated gate in the CI pipeline.
+    ○ RAGAS           — measures Gherkin/User Story consistency as a
+                         faithfulness problem: does the scenario reflect
+                         the acceptance criteria, or did Claude fill gaps
+                         with assumptions?
+    ○ Promptfoo        — regression testing between prompt/model versions;
+                         every change to system_prompt.txt is benchmarked
+                         against a fixed set of reference tickets.
+    ○ LangSmith        — full tracing/observability of every LLM call, so
+                         failures and quality drops are diagnosed at the
+                         trace level.
+    ○ Pytest           — classic unit tests for the deterministic plumbing
+                         around the AI core (Jira parsing, dispatch
+                         payloads, Slack/Power BI formatting).
+    ○ Golden dataset   — curated, versioned set of reference Jira tickets
+                         with known-good expected Gherkin output, used as
+                         the baseline for every DeepEval/RAGAS/Promptfoo run.
+    ○ Automated quality gate in CI — a run is blocked from reaching
+                         production if the DeepEval/RAGAS score drops below
+                         threshold, the same way a failing unit test blocks
+                         a deploy.
+
+--------------------------------------------------------------------------------
+QUALITY CRITERIA — HOW TO EVALUATE SMOKY
+--------------------------------------------------------------------------------
+
+  Dimension                     | Target metric
+  ─────────────────────────────|──────────────────────────────────────────
+  Gherkin/Story consistency     | Claude self-critique score ≥ 8/10
+  Hallucinations                 | 0 uncommented invented selectors
+  Coverage                       | 1 Happy Path + 1 negative case minimum
+  Detection → results delay      | < 10 minutes end-to-end
+  Flakiness                      | < 5% unstable tests over 30 days
+  Agent availability             | 24/7 · 99% tolerance
+  Prompt regression               | Alert if average score drops > 1 point
+
+--------------------------------------------------------------------------------
+QA QUALIFICATIONS — WHAT SMOKY TESTS ON ITSELF
+--------------------------------------------------------------------------------
+
+  Smoky is itself tested with the Kallitests tools:
+
+  - Pytest          → unit tests for each Python module
+  - DeepEval        → quality evaluation of generated scenarios
+  - RAGAS           → User Story / Gherkin output consistency
+  - LangSmith       → traces and observability of each LLM run
+  - Promptfoo       → prompt regression between versions
+
+================================================================================
+END OF SPEC — SMOKY v1.0
+Kallitests · github.com/kallitests/smoky
+================================================================================
