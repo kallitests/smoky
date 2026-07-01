@@ -1,6 +1,11 @@
 # 🤖 Smoky — Autonomous Smoke Test Agent
 
+> [!WARNING]
+> **🚧 Work in Progress** — This project is under active construction. Some features described below (Phase 2/3/4 of the roadmap) are not fully implemented yet. Expect breaking changes, incomplete modules, and evolving docs. Not production-ready.
+
 > **A Claude-powered agent that watches your Jira board 24/7, writes Gherkin scenarios from User Stories, runs them through a Dockerized Playwright MCP pipeline, and publishes results to Slack and Power BI — zero human intervention.**
+
+[![Status](https://img.shields.io/badge/status-work%20in%20progress-red?style=flat-square&logo=progress)](#-why-this-project-exists-star)
 
 [![CI](https://img.shields.io/badge/CI-GitHub%20Actions-2088FF?style=flat-square&logo=githubactions)](https://github.com/kallitests/smoky-playwright/actions)
 [![Python](https://img.shields.io/badge/Python-3.11+-blue?style=flat-square&logo=python)](https://python.org)
