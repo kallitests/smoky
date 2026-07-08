@@ -1,16 +1,106 @@
 # =============================================================================
-# docker-compose.yml — Smoky local development
+# docker-compose.yml — Smoky full local stack
 # =============================================================================
-# Runs the full Smoky stack locally for development and testing.
-# Production deployments use GitHub Actions — this is for local iteration only.
+# Mirrors the CI trigger layers (pr.yml / main.yml / nightly.yml / smoky.yml)
+# as runnable local services, plus the reporting/alerting infrastructure
+# (Redis + reporting + alerting) that CI pushes into.
 #
 # Usage:
-#   docker compose up agent    # Start the Jira watcher agent
-#   docker compose up cypress  # Run Cypress tests locally
-#   docker compose up smoky    # Run a single ticket end-to-end
+#   docker compose up redis -d       # Start the shared datastore first
+#   docker compose run lint          # ESLint + Prettier check
+#   docker compose run unit          # Vitest, coverage
+#   docker compose run api           # Cypress API spec only
+#   docker compose run smoke         # Cypress @smoke (UI + BDD)
+#   docker compose run regression    # Cypress @regression (full suite)
+#   docker compose up agent          # Start the Jira watcher agent
+#   ISSUE_KEY=PROJ-42 docker compose run smoky   # Run a single ticket
+#   docker compose run reporting     # Push smoky-results/results.json to
+#                                     # Redis (flakiness) + Power BI
+#   docker compose run alerting      # Drain the digest queue, send Gmail
 # =============================================================================
 
 services:
+
+  # ---------------------------------------------------------------------------
+  # redis — intermediate results store + flakiness history (spec 7.3, 9)
+  # ---------------------------------------------------------------------------
+  redis:
+    image: redis:7.4-alpine
+    restart: unless-stopped
+    ports:
+      - "6379:6379"
+    volumes:
+      - redis-data:/data
+    command: redis-server --save 60 1 --loglevel warning
+    healthcheck:
+      test: ["CMD", "redis-cli", "ping"]
+      interval: 10s
+      timeout: 3s
+      retries: 5
+
+  # ---------------------------------------------------------------------------
+  # lint — ESLint + Prettier check (mirrors pr.yml "lint" job)
+  # ---------------------------------------------------------------------------
+  lint:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile.node
+    command: sh -c "npm run lint && npx prettier --check ."
+
+  # ---------------------------------------------------------------------------
+  # unit — Vitest, coverage (mirrors pr.yml "unit" job)
+  # ---------------------------------------------------------------------------
+  unit:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile.node
+    volumes:
+      - ../coverage:/app/coverage
+    command: npm run test:unit
+
+  # ---------------------------------------------------------------------------
+  # api — Cypress API spec only (mirrors pr.yml "api" job)
+  # ---------------------------------------------------------------------------
+  api:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
+    env_file: ../.env
+    volumes:
+      - ../cypress-report:/app/cypress-report
+    environment:
+      - CI=true
+    command: npx cypress run --spec "cypress/api/**/*.cy.ts"
+
+  # ---------------------------------------------------------------------------
+  # smoke — Cypress @smoke, UI (BDD) + API tag overlap (mirrors pr.yml "smoke")
+  # ---------------------------------------------------------------------------
+  smoke:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
+    env_file: ../.env
+    volumes:
+      - ../cypress:/app/cypress
+      - ../features:/app/features
+      - ../cypress-report:/app/cypress-report
+    environment:
+      - CI=true
+    command: npx cypress run --browser chrome --env tags=@smoke,grepTags=@smoke
+
+  # ---------------------------------------------------------------------------
+  # regression — Cypress @regression, full suite (mirrors main.yml)
+  # ---------------------------------------------------------------------------
+  regression:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile
+    env_file: ../.env
+    volumes:
+      - ../cypress-report:/app/cypress-report
+    environment:
+      - CI=true
+    command: npx cypress run --browser chrome --env tags=@regression,grepTags=@regression
 
   # ---------------------------------------------------------------------------
   # agent — Jira watcher + LangGraph pipeline (Python)
@@ -20,26 +110,16 @@ services:
       context: ..
       dockerfile: docker/Dockerfile.agent
     env_file: ../.env
+    environment:
+      - REDIS_URL=redis://redis:6379/0
+    depends_on:
+      redis:
+        condition: service_healthy
     volumes:
       - ../agent:/app/agent
       - ../prompts:/app/prompts
       - ../logs:/app/logs
     command: python -m agent.jira_watcher
-
-  # ---------------------------------------------------------------------------
-  # cypress — Dockerized Cypress test runner
-  # ---------------------------------------------------------------------------
-  cypress:
-    build:
-      context: ..
-      dockerfile: docker/Dockerfile
-    env_file: ../.env
-    volumes:
-      - ../tests:/app/tests
-      - ../cypress-report:/app/cypress-report
-    environment:
-      - CI=true
-    command: npx cypress run --browser chrome --env grepTags=@smoke
 
   # ---------------------------------------------------------------------------
   # smoky — Run a single ticket end-to-end (for manual testing)
@@ -50,7 +130,54 @@ services:
       context: ..
       dockerfile: docker/Dockerfile.agent
     env_file: ../.env
+    environment:
+      - REDIS_URL=redis://redis:6379/0
+    depends_on:
+      redis:
+        condition: service_healthy
     volumes:
       - ../agent:/app/agent
       - ../prompts:/app/prompts
     command: python -c "from agent.smoky_agent import run_smoky; import os; run_smoky(os.environ['ISSUE_KEY'])"
+
+  # ---------------------------------------------------------------------------
+  # reporting — pushes a results.json through flakiness tracking -> Power BI
+  # (spec 7.3). Consumes what pr.yml/main.yml/nightly.yml produce, which the
+  # Jira agent never sees on its own (those runs aren't ticket-triggered).
+  # ---------------------------------------------------------------------------
+  reporting:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile.agent
+    env_file: ../.env
+    environment:
+      - REDIS_URL=redis://redis:6379/0
+    depends_on:
+      redis:
+        condition: service_healthy
+    volumes:
+      - ../agent:/app/agent
+      - ../smoky-results:/app/smoky-results
+    command: python -m agent.reporting_service
+
+  # ---------------------------------------------------------------------------
+  # alerting — drains the Redis digest queue and sends the batched Gmail
+  # digest (spec 8). Run on a schedule (cron / scheduled workflow) in
+  # production; here it's a one-shot `docker compose run`.
+  # ---------------------------------------------------------------------------
+  alerting:
+    build:
+      context: ..
+      dockerfile: docker/Dockerfile.agent
+    env_file: ../.env
+    environment:
+      - REDIS_URL=redis://redis:6379/0
+    depends_on:
+      redis:
+        condition: service_healthy
+    volumes:
+      - ../agent:/app/agent
+    command: python -m agent.send_digest
+
+volumes:
+  redis-data:

@@ -1,7 +1,10 @@
 {
   "name": "smoky-cypress",
   "version": "1.0.0",
-  "description": "Smoky — Autonomous smoke test agent powered by Claude + Cypress",
+  "description": "Smoky \u2014 Autonomous smoke test agent powered by Claude + Cypress",
+  "engines": {
+    "node": ">=22"
+  },
   "scripts": {
     "test:e2e": "cypress run",
     "test:smoke": "cypress run --env tags=@smoke,grepTags=@smoke",
@@ -11,8 +14,8 @@
     "test:unit:watch": "vitest",
     "test:headed": "cypress run --headed",
     "test:ui": "cypress open",
-    "lint": "eslint . --ext .ts",
-    "lint:fix": "eslint . --ext .ts --fix",
+    "lint": "eslint .",
+    "lint:fix": "eslint . --fix",
     "format": "prettier --write .",
     "prepare": "husky",
     "agent": "python -m agent.jira_watcher",
@@ -20,26 +23,26 @@
     "env:check": "python utils/env_check.py"
   },
   "devDependencies": {
-    "cypress": "^13.13.0",
-    "@cypress/grep": "^4.0.1",
-    "cypress-mochawesome-reporter": "^3.8.2",
-    "@badeball/cypress-cucumber-preprocessor": "^20.1.0",
-    "@bahmutov/cypress-esbuild-preprocessor": "^2.2.0",
-    "esbuild": "^0.21.5",
-    "vitest": "^2.0.5",
-    "@vitest/coverage-v8": "^2.0.5",
-    "husky": "^9.1.4",
-    "lint-staged": "^15.2.9",
-    "eslint": "^8.57.0",
-    "eslint-plugin-cypress": "^3.5.0",
-    "@typescript-eslint/eslint-plugin": "^7.18.0",
-    "@typescript-eslint/parser": "^7.18.0",
-    "prettier": "^3.3.3",
+    "cypress": "^15.16.0",
+    "@cypress/grep": "^6.0.2",
+    "cypress-mochawesome-reporter": "^4.0.2",
+    "@badeball/cypress-cucumber-preprocessor": "^24.0.1",
+    "@bahmutov/cypress-esbuild-preprocessor": "^2.2.8",
+    "esbuild": "^0.28.1",
+    "vitest": "^4.1.7",
+    "@vitest/coverage-v8": "^4.1.7",
+    "husky": "^9.1.7",
+    "lint-staged": "^15.2.10",
+    "eslint": "^10.4.0",
+    "eslint-plugin-cypress": "^6.4.1",
     "eslint-config-prettier": "^9.1.0",
-    "@commitlint/cli": "^19.4.0",
-    "@commitlint/config-conventional": "^19.2.2",
-    "@types/node": "^20.0.0",
-    "typescript": "^5.4.0"
+    "typescript-eslint": "^8.60.1",
+    "prettier": "^3.4.1",
+    "@commitlint/cli": "^19.6.0",
+    "@commitlint/config-conventional": "^19.6.0",
+    "@types/node": "^22.10.0",
+    "typescript": "^5.7.2",
+    "@eslint/js": "^10.0.1"
   },
   "cypress-cucumber-preprocessor": {
     "stepDefinitions": "cypress/e2e/**/*.steps.ts"

@@ -356,6 +356,11 @@ Add these secrets to your GitHub repository (`Settings → Secrets → Actions`)
 | `GITHUB_TOKEN` | Auto-provided by GitHub Actions |
 | `STAGING_BASE_URL` | Base URL of your staging environment |
 | `SLACK_WEBHOOK_URL` | Slack incoming webhook URL |
+| `TEAMS_WEBHOOK_URL` | Teams Adaptive Card webhook (optional — @critical alerts) |
+| `DISCORD_WEBHOOK_URL` | Discord webhook (optional — demo channel, @critical alerts) |
+| `GMAIL_ADDRESS` / `GMAIL_APP_PASSWORD` / `GMAIL_DIGEST_TO` | Gmail digest (optional — batched, non-critical) |
+| `REDIS_URL` | Flakiness store — point at a managed Redis in CI, not a container |
+| `CYPRESS_RECORD_KEY` | Cypress Cloud (optional — used by `main.yml`/`nightly.yml`) |
 | `LANGCHAIN_API_KEY` | LangSmith API key (optional) |
 
 ---
@@ -378,18 +383,48 @@ python -c "from agent.smoky_agent import run_smoky; run_smoky('PROJ-142')"
 
 ### Run with Docker
 
-```bash
-# Start the agent
-docker compose -f docker/docker-compose.yml up agent
+The full stack — lint, unit, API, smoke, regression, the Jira agent, Redis,
+reporting, and alerting — is defined in `docker/docker-compose.yml`. Every
+service builds from one of three images: `docker/Dockerfile` (Cypress +
+browsers, for api/smoke/regression), `docker/Dockerfile.node` (lean Node
+only, for lint/unit — no browser, no Cypress binary), or
+`docker/Dockerfile.agent` (Python, for agent/smoky/reporting/alerting).
 
-# Run tests for a specific ticket
-ISSUE_KEY=PROJ-142 docker compose -f docker/docker-compose.yml run smoky
+```bash
+cd docker
+
+# Start Redis first — flakiness tracking + the Gmail digest queue depend on it
+docker compose up redis -d
+
+# Local quality gate
+docker compose run lint
+docker compose run unit
+
+# Test pyramid
+docker compose run api
+docker compose run smoke
+docker compose run regression
+
+# Start the agent (long-running, watches Jira)
+docker compose up agent
+
+# Run a single ticket end-to-end
+ISSUE_KEY=PROJ-142 docker compose run smoky
+
+# Push a results.json through flakiness tracking -> Power BI
+docker compose run reporting
+
+# Flush the batched Gmail digest
+docker compose run alerting
 ```
 
 ### Run Cypress tests locally
 
 ```bash
 npm run test:smoke
+npm run test:regression
+npm run test:api
+npm run test:unit
 ```
 
 ---
@@ -423,6 +458,10 @@ The HTML report is uploaded as an artifact and retained for 14 days.
 | `environment` | Text |
 | `conclusion` | Text |
 | `run_id` | Text |
+
+Add an `avg_flakiness_pct` (Number) column too — `agent/flakiness_tracker.py`
+computes it from the last 20 runs per test (stored in Redis) and
+`push_powerbi()` includes it on every push.
 
 2. Copy the dataset ID and workspace ID into your `.env` file
 3. Generate a Power BI access token and add it to `.env`

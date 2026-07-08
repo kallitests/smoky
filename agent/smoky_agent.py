@@ -195,16 +195,18 @@ def poll_results(state: SmokyState) -> SmokyState:
 
 
 # ---------------------------------------------------------------------------
-# Node 6 — Publish results (Slack + Power BI + Jira)
+# Node 6 — Publish results (Slack + Power BI + Jira + Teams/Discord/Gmail)
 # ---------------------------------------------------------------------------
 
 def publish_results(state: SmokyState) -> SmokyState:
     """
     Claude generates a natural-language Slack report from the JSON results.
     Publishes to:
-      - Slack #smoky-results channel
-      - Power BI dataset (REST API push)
+      - Slack #smoky-results channel (every run)
+      - Power BI dataset, annotated with flakiness (every run)
       - Jira ticket (comment + status transition)
+      - Teams/Discord (immediate) or Gmail digest queue (batched), per the
+        severity-routed escalation rule in spec section 8 — only on failure
     """
     logger.info(f"[smoky] Publishing results for {state['issue_key']}")
     publisher = ReportPublisher()
@@ -215,8 +217,15 @@ def publish_results(state: SmokyState) -> SmokyState:
             results=state["test_results"],
         )
         publisher.send_slack(slack_msg)
-        publisher.push_powerbi(state["issue_key"], state["test_results"])
+
+        flakiness = publisher.record_flakiness(state["test_results"])
+        avg_flakiness = round(sum(flakiness.values()) / len(flakiness), 1) if flakiness else 0.0
+        publisher.push_powerbi(state["issue_key"], state["test_results"], avg_flakiness_pct=avg_flakiness)
+
         publisher.update_jira(state["issue_key"], state["test_results"])
+
+        is_critical_smoke = state.get("priority", "Major") in ("Blocker", "Critical")
+        publisher.escalate(state["issue_key"], state["test_results"], is_critical_smoke=is_critical_smoke)
 
         return {
             **state,

@@ -1,12 +1,11 @@
 # =============================================================================
 # Dockerfile.agent — Smoky Python Agent (Jira watcher + LangGraph pipeline)
 # =============================================================================
-# Referenced by docker-compose.yml (agent + smoky services) but was missing
-# from the repo — this fixes that gap. Separate from docker/Dockerfile, which
-# builds the Cypress test runner image.
+# Also used for the reporting/alerting docker-compose services (they share
+# the same Python dependency set — Redis client, Anthropic SDK, requests).
 # =============================================================================
 
-FROM python:3.12-slim
+FROM python:3.13-slim AS base
 
 WORKDIR /app
 
@@ -19,6 +18,11 @@ COPY agent/ ./agent/
 COPY prompts/ ./prompts/
 
 ENV PYTHONUNBUFFERED=1
+
+# Run as non-root
+RUN useradd --create-home --uid 1001 smoky \
+  && chown -R smoky:smoky /app
+USER smoky
 
 # Overridden per-service in docker-compose.yml
 CMD ["python", "-m", "agent.jira_watcher"]

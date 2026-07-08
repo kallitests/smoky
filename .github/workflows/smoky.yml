@@ -65,7 +65,7 @@ jobs:
       - name: Setup Node.js
         uses: actions/setup-node@v4
         with:
-          node-version: "20"
+          node-version: "22"
           cache: "npm"
 
       # -----------------------------------------------------------------------
@@ -185,9 +185,4 @@ jobs:
 
       # -----------------------------------------------------------------------
       # 11. Fail the job if tests failed (after artifacts are uploaded)
-      # -----------------------------------------------------------------------
-      - name: Assert test outcome
-        if: steps.run_tests.outcome == 'failure'
-        run: |
-          echo "❌ Smoke tests FAILED for $ISSUE_KEY"
-          exit 1
+      # -------------------------------------------

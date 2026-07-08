@@ -24,3 +24,6 @@ langsmith>=0.1.0
 # Utilities
 python-dotenv>=1.0.0
 pydantic>=2.7.0
+
+# Reporting / alerting (flakiness tracking + intermediate results store)
+redis>=5.2.0
