@@ -1,20 +1,56 @@
 {
-  "name": "smoky-playwright",
+  "name": "smoky-cypress",
   "version": "1.0.0",
-  "description": "Smoky — Autonomous smoke test agent powered by Claude + Playwright MCP",
+  "description": "Smoky — Autonomous smoke test agent powered by Claude + Cypress",
   "scripts": {
-    "test": "playwright test",
-    "test:smoke": "playwright test --grep @smoke",
-    "test:headed": "playwright test --headed",
-    "test:ui": "playwright test --ui",
-    "test:report": "playwright show-report",
+    "test:e2e": "cypress run",
+    "test:smoke": "cypress run --env tags=@smoke,grepTags=@smoke",
+    "test:regression": "cypress run --env tags=@regression,grepTags=@regression",
+    "test:api": "cypress run --spec \"cypress/api/**/*.cy.ts\"",
+    "test:unit": "vitest run --coverage",
+    "test:unit:watch": "vitest",
+    "test:headed": "cypress run --headed",
+    "test:ui": "cypress open",
+    "lint": "eslint . --ext .ts",
+    "lint:fix": "eslint . --ext .ts --fix",
+    "format": "prettier --write .",
+    "prepare": "husky",
     "agent": "python -m agent.jira_watcher",
     "smoky": "python -c \"from agent.smoky_agent import run_smoky; import sys; run_smoky(sys.argv[1])\"",
     "env:check": "python utils/env_check.py"
   },
   "devDependencies": {
-    "@playwright/test": "^1.44.0",
+    "cypress": "^13.13.0",
+    "@cypress/grep": "^4.0.1",
+    "cypress-mochawesome-reporter": "^3.8.2",
+    "@badeball/cypress-cucumber-preprocessor": "^20.1.0",
+    "@bahmutov/cypress-esbuild-preprocessor": "^2.2.0",
+    "esbuild": "^0.21.5",
+    "vitest": "^2.0.5",
+    "@vitest/coverage-v8": "^2.0.5",
+    "husky": "^9.1.4",
+    "lint-staged": "^15.2.9",
+    "eslint": "^8.57.0",
+    "eslint-plugin-cypress": "^3.5.0",
+    "@typescript-eslint/eslint-plugin": "^7.18.0",
+    "@typescript-eslint/parser": "^7.18.0",
+    "prettier": "^3.3.3",
+    "eslint-config-prettier": "^9.1.0",
+    "@commitlint/cli": "^19.4.0",
+    "@commitlint/config-conventional": "^19.2.2",
     "@types/node": "^20.0.0",
     "typescript": "^5.4.0"
+  },
+  "cypress-cucumber-preprocessor": {
+    "stepDefinitions": "cypress/e2e/**/*.steps.ts"
+  },
+  "lint-staged": {
+    "*.{ts,tsx}": [
+      "eslint --fix",
+      "prettier --write"
+    ],
+    "*.{json,md,yml,yaml}": [
+      "prettier --write"
+    ]
   }
 }

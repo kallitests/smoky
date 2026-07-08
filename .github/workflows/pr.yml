@@ -1,0 +1,102 @@
+name: PR — Lint, Unit, API, Smoke
+
+# =============================================================================
+# Trigger: every Pull Request. Target: feedback in under 10 minutes.
+# Four independent jobs (spec section 6.1/6.2) — none blocks another's
+# results from being reported; each publishes its own artifact.
+# Required checks (branch protection) should point at: lint, unit, smoke.
+# =============================================================================
+
+on:
+  pull_request:
+    branches: [main]
+
+concurrency:
+  group: pr-${{ github.event.pull_request.number }}
+  cancel-in-progress: true
+
+jobs:
+  lint:
+    name: Lint (ESLint + Prettier)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: "npm"
+      - run: npm ci
+      - run: npm run lint
+      - run: npx prettier --check .
+
+  unit:
+    name: Unit tests (coverage ≥ 80%)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: "npm"
+      - run: npm ci
+      - run: npm run test:unit
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: unit-coverage
+          path: coverage/
+          retention-days: 14
+
+  api:
+    name: API tests (@api)
+    runs-on: ubuntu-latest
+    container:
+      image: cypress/browsers:node20.16.0-chrome127-ff128
+    env:
+      BASE_URL: ${{ secrets.STAGING_BASE_URL }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: "npm"
+      - run: npm ci
+      - run: npx cypress verify
+      - run: npm run test:api
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: api-report
+          path: cypress-report/
+          retention-days: 14
+
+  smoke:
+    name: UI smoke tests (@smoke)
+    runs-on: ubuntu-latest
+    container:
+      image: cypress/browsers:node20.16.0-chrome127-ff128
+    env:
+      BASE_URL: ${{ secrets.STAGING_BASE_URL }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: "npm"
+      - run: npm ci
+      - run: npx cypress verify
+      - run: npx cypress run --browser chrome --env tags=@smoke,grepTags=@smoke
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: smoke-report
+          path: cypress-report/
+          retention-days: 14
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: smoke-failure-artifacts
+          path: |
+            cypress/screenshots/**/*.png
+            cypress/videos/**/*.mp4
+          retention-days: 7

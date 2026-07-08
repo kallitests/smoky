@@ -1,0 +1,82 @@
+name: Nightly — Cross-browser + Dependency Audit
+
+# =============================================================================
+# Trigger: scheduled (02:00 UTC daily) + manual dispatch.
+# Full suite (@smoke + @regression) across all three Cypress-supported
+# desktop browsers, plus a dependency vulnerability audit.
+# =============================================================================
+
+on:
+  schedule:
+    - cron: "0 2 * * *"
+  workflow_dispatch:
+
+jobs:
+  cross-browser:
+    name: "Full suite — ${{ matrix.browser }}"
+    runs-on: ubuntu-latest
+    container:
+      image: cypress/browsers:node20.16.0-chrome127-ff128
+    strategy:
+      fail-fast: false
+      matrix:
+        browser: [chrome, firefox, edge]
+    env:
+      BASE_URL: ${{ secrets.STAGING_BASE_URL }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: "npm"
+      - run: npm ci
+      - run: npx cypress verify
+      - run: npx cypress run --browser ${{ matrix.browser }}
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: nightly-report-${{ matrix.browser }}
+          path: cypress-report/
+          retention-days: 30
+      - uses: actions/upload-artifact@v4
+        if: failure()
+        with:
+          name: nightly-failure-artifacts-${{ matrix.browser }}
+          path: |
+            cypress/screenshots/**/*.png
+            cypress/videos/**/*.mp4
+          retention-days: 14
+
+  dependency-audit:
+    name: Dependency audit (npm + pip)
+    runs-on: ubuntu-latest
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: "npm"
+      - run: npm ci
+      - name: npm audit
+        run: npm audit --audit-level=high
+        continue-on-error: true
+      - uses: actions/setup-python@v5
+        with:
+          python-version: "3.12"
+      - name: pip-audit
+        run: |
+          pip install --quiet pip-audit
+          pip-audit -r requirements.txt
+        continue-on-error: true
+
+  # ---------------------------------------------------------------------------
+  # Light load test — spec section 6.1 calls for this nightly, but no load
+  # testing tool (k6 / Artillery / etc.) is wired into this repo yet. Left as
+  # an explicit placeholder rather than a fabricated step — flag for
+  # decision on tooling before implementing.
+  # ---------------------------------------------------------------------------
+  # load-test:
+  #   name: Light load test (NOT IMPLEMENTED — pick k6 or Artillery)
+  #   runs-on: ubuntu-latest
+  #   steps:
+  #     - run: echo "TODO"

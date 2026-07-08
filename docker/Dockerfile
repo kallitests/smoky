@@ -1,11 +1,13 @@
 # =============================================================================
-# Dockerfile — Smoky Playwright MCP Runner
+# Dockerfile — Smoky Cypress Runner
 # =============================================================================
-# Uses the official Playwright image: Node.js + all browsers pre-installed.
-# No npx playwright install needed — runs out of the box in any CI pipeline.
+# Uses the official Cypress browsers image: Node.js + Chrome/Firefox/Edge
+# pre-installed. No separate browser install step needed in CI.
+# Pin/verify the tag against https://github.com/cypress-io/cypress-docker-images
+# when bumping Cypress versions.
 # =============================================================================
 
-FROM mcr.microsoft.com/playwright:v1.44.0-jammy
+FROM cypress/browsers:node20.16.0-chrome127-ff128
 
 WORKDIR /app
 
@@ -19,8 +21,7 @@ RUN npm ci
 COPY . .
 
 # Environment variables passed at runtime by GitHub Actions
-ENV PLAYWRIGHT_MCP=true
 ENV CI=true
 
-# Default: run all @smoke tagged tests in Chromium
-CMD ["npx", "playwright", "test", "--grep", "@smoke", "--project=chromium"]
+# Default: run all @smoke tagged tests in Chrome
+CMD ["npx", "cypress", "run", "--browser", "chrome", "--env", "grepTags=@smoke"]

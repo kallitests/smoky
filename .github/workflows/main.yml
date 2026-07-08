@@ -1,0 +1,113 @@
+name: Main — Full Regression
+
+# =============================================================================
+# Trigger: push to main (merge), or manual dispatch with a custom tag
+# expression (spec 6.1: "relancer une suite ciblée par tag").
+#
+# Sharding/parallelism uses Cypress Cloud (cypress-io/github-action `record`
+# + `parallel`), which also satisfies the Cypress Cloud reporting requirement
+# (spec 7.2) in one mechanism instead of two.
+#
+# REQUIRES (not yet configured — placeholders):
+#   - Register this project at cloud.cypress.io to get a project ID
+#   - Add CYPRESS_RECORD_KEY as a GitHub Actions secret
+#   - Set CYPRESS_PROJECT_ID below (or as a repo variable)
+# Until then, `record: true` will fail — set both before enabling this
+# workflow, or drop `record`/`parallel` to run without Cloud (no sharding).
+# =============================================================================
+
+on:
+  push:
+    branches: [main]
+  workflow_dispatch:
+    inputs:
+      tags:
+        description: "Cucumber/grep tag expression to run (default: full regression)"
+        required: false
+        default: "@regression"
+
+env:
+  CYPRESS_PROJECT_ID: "" # TODO: set after registering at cloud.cypress.io
+
+jobs:
+  regression:
+    name: "UI regression (shard ${{ matrix.container }}/2)"
+    runs-on: ubuntu-latest
+    container:
+      image: cypress/browsers:node20.16.0-chrome127-ff128
+    strategy:
+      fail-fast: false
+      matrix:
+        container: [1, 2]
+    env:
+      BASE_URL: ${{ secrets.STAGING_BASE_URL }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: "npm"
+      - run: npm ci
+      - run: npx cypress verify
+      - name: Run regression shard
+        env:
+          CYPRESS_RECORD_KEY: ${{ secrets.CYPRESS_RECORD_KEY }}
+        run: |
+          TAG_EXPR="${{ github.event.inputs.tags || '@regression' }}"
+          npx cypress run --browser chrome \
+            --env tags="$TAG_EXPR",grepTags="$TAG_EXPR" \
+            --record --parallel --group "regression-chrome" \
+            --ci-build-id "${{ github.run_id }}"
+        continue-on-error: true
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: regression-report-shard-${{ matrix.container }}
+          path: cypress-report/
+          retention-days: 30
+
+  api-extended:
+    name: API tests (full suite, all tags)
+    runs-on: ubuntu-latest
+    container:
+      image: cypress/browsers:node20.16.0-chrome127-ff128
+    env:
+      BASE_URL: ${{ secrets.STAGING_BASE_URL }}
+    steps:
+      - uses: actions/checkout@v4
+      - uses: actions/setup-node@v4
+        with:
+          node-version: "20"
+          cache: "npm"
+      - run: npm ci
+      - run: npx cypress verify
+      - run: npm run test:api
+      - uses: actions/upload-artifact@v4
+        if: always()
+        with:
+          name: api-extended-report
+          path: cypress-report/
+          retention-days: 30
+
+  build-report-artifact:
+    name: Consolidate reporting artifact
+    needs: [regression, api-extended]
+    if: always()
+    runs-on: ubuntu-latest
+    steps:
+      - name: Download all reports
+        uses: actions/download-artifact@v4
+        with:
+          path: all-reports
+      - name: Package consolidated artifact
+        run: |
+          mkdir -p reports
+          cp -r all-reports/* reports/ 2>/dev/null || true
+          echo "Consolidated reports for run ${{ github.run_id }}" > reports/README.txt
+      - uses: actions/upload-artifact@v4
+        with:
+          name: main-regression-consolidated-report
+          path: reports/
+          retention-days: 30
+      # TODO: push reports/ JSON to the Power BI intermediate store here
+      # (see docs/architecture/architecture-pipeline-cicd-sdet.md section 7.3)

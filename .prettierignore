@@ -1,0 +1,8 @@
+node_modules
+cypress/e2e/generated
+cypress-report
+cypress/videos
+cypress/screenshots
+coverage
+package-lock.json
+*.feature

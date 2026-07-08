@@ -1,0 +1,38 @@
+# =============================================================================
+# Smoky — .gitignore
+# =============================================================================
+
+# Node
+node_modules/
+npm-debug.log*
+
+# Cypress artifacts
+cypress/videos/
+cypress/screenshots/
+cypress/downloads/
+cypress-report/
+cypress/e2e/generated/
+
+# Unit test coverage
+coverage/
+
+# Python
+__pycache__/
+*.pyc
+.venv/
+venv/
+*.egg-info/
+
+# Env / secrets
+.env
+.env.*
+!.env.example
+
+# Logs
+logs/
+*.log
+
+# OS / editor
+.DS_Store
+.vscode/
+.idea/

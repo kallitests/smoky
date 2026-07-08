@@ -1,9 +1,11 @@
 #!/usr/bin/env python3
 """
-agent/gherkin_generator.py — Gherkin scenario generator + Claude self-validation
+agent/spec_generator.py — Cypress spec generator + Claude self-validation
 
 Two responsibilities:
-  1. generate() — sends the User Story to Claude, receives a .feature file
+  1. generate() — sends the User Story to Claude, receives a runnable Cypress
+     .cy.ts spec file directly (no Gherkin/BDD intermediate layer — Claude
+     writes test code, and self-validation checks that code against the story)
   2. validate() — Claude self-critiques its own output (coherence, hallucinations, coverage)
 """
 
@@ -13,7 +15,7 @@ import json
 import logging
 from anthropic import Anthropic
 
-logger = logging.getLogger("smoky.gherkin")
+logger = logging.getLogger("smoky.spec")
 
 client = Anthropic(api_key=os.environ["ANTHROPIC_API_KEY"])
 MODEL  = "claude-sonnet-4-6"
@@ -31,10 +33,10 @@ def _load_prompt(name: str) -> str:
 
 
 # ---------------------------------------------------------------------------
-# GherkinGenerator
+# SpecGenerator
 # ---------------------------------------------------------------------------
 
-class GherkinGenerator:
+class SpecGenerator:
 
     def generate(
         self,
@@ -47,8 +49,8 @@ class GherkinGenerator:
     ) -> tuple[str, str]:
         """
         Sends the User Story to Claude and returns:
-          - feature_content: the full .feature file as a string
-          - file_name: e.g. "proj_142_login.feature"
+          - spec_content: the full Cypress .cy.ts spec as a string
+          - file_name: e.g. "proj_142_login.cy.ts"
         """
         system_prompt = _load_prompt("system_prompt.txt")
 
@@ -64,9 +66,9 @@ User Story:
 Acceptance Criteria:
 {acceptance_criteria or 'Not specified — infer from the User Story.'}
 
-Generate the Gherkin .feature file now.
+Generate the Cypress spec file now.
 """
-        logger.info(f"[gherkin] Calling Claude for {issue_key}")
+        logger.info(f"[spec] Calling Claude for {issue_key}")
 
         response = client.messages.create(
             model=MODEL,
@@ -75,22 +77,22 @@ Generate the Gherkin .feature file now.
             messages=[{"role": "user", "content": user_message}],
         )
 
-        feature_content = response.content[0].text.strip()
+        spec_content = response.content[0].text.strip()
 
         # Remove markdown code fences if Claude wrapped the output
-        feature_content = re.sub(r"^```(?:gherkin)?\n?", "", feature_content)
-        feature_content = re.sub(r"\n?```$", "", feature_content)
+        spec_content = re.sub(r"^```(?:ts|typescript|javascript|js)?\n?", "", spec_content)
+        spec_content = re.sub(r"\n?```$", "", spec_content)
 
         # Build a clean file name from the issue key
         slug = re.sub(r"[^a-z0-9]+", "_", summary.lower())[:40].strip("_")
-        file_name = f"{issue_key.lower().replace('-', '_')}_{slug}.feature"
+        file_name = f"{issue_key.lower().replace('-', '_')}_{slug}.cy.ts"
 
-        logger.info(f"[gherkin] Generated {file_name} ({len(feature_content)} chars)")
-        return feature_content, file_name
+        logger.info(f"[spec] Generated {file_name} ({len(spec_content)} chars)")
+        return spec_content, file_name
 
-    def validate(self, story: str, feature: str) -> tuple[float, list[str]]:
+    def validate(self, story: str, spec: str) -> tuple[float, list[str]]:
         """
-        Claude self-critiques the generated Gherkin.
+        Claude self-critiques the generated Cypress spec.
         Returns:
           - score: float 0–10
           - issues: list of detected problems (hallucinations, missing cases, etc.)
@@ -101,10 +103,10 @@ Generate the Gherkin .feature file now.
 Original User Story:
 {story}
 
-Generated Gherkin:
-{feature}
+Generated Cypress spec:
+{spec}
 
-Evaluate the Gherkin and return ONLY a JSON object like:
+Evaluate the spec and return ONLY a JSON object like:
 {{
   "score": 8.5,
   "issues": [
@@ -133,8 +135,8 @@ Evaluate the Gherkin and return ONLY a JSON object like:
             result = json.loads(raw)
             score  = float(result.get("score", 0))
             issues = result.get("issues", [])
-            logger.info(f"[gherkin] Validation score: {score}/10 — {len(issues)} issue(s)")
+            logger.info(f"[spec] Validation score: {score}/10 — {len(issues)} issue(s)")
             return score, issues
         except json.JSONDecodeError as e:
-            logger.error(f"[gherkin] Failed to parse validation JSON: {e}")
+            logger.error(f"[spec] Failed to parse validation JSON: {e}")
             return 0.0, [f"Validation parsing error: {e}"]

@@ -1,0 +1,5 @@
+echo "[pre-push] Running unit tests..."
+npm run test:unit
+
+echo "[pre-push] Running @smoke subset..."
+npm run test:smoke

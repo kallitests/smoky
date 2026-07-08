@@ -5,9 +5,9 @@
 # Production deployments use GitHub Actions — this is for local iteration only.
 #
 # Usage:
-#   docker compose up agent       # Start the Jira watcher agent
-#   docker compose up playwright  # Run Playwright tests locally
-#   docker compose up smoky       # Run a single ticket end-to-end
+#   docker compose up agent    # Start the Jira watcher agent
+#   docker compose up cypress  # Run Cypress tests locally
+#   docker compose up smoky    # Run a single ticket end-to-end
 # =============================================================================
 
 services:
@@ -27,20 +27,19 @@ services:
     command: python -m agent.jira_watcher
 
   # ---------------------------------------------------------------------------
-  # playwright — Dockerized Playwright MCP test runner
+  # cypress — Dockerized Cypress test runner
   # ---------------------------------------------------------------------------
-  playwright:
+  cypress:
     build:
       context: ..
       dockerfile: docker/Dockerfile
     env_file: ../.env
     volumes:
       - ../tests:/app/tests
-      - ../playwright-report:/app/playwright-report
-      - ../test-results:/app/test-results
+      - ../cypress-report:/app/cypress-report
     environment:
       - CI=true
-    command: npx playwright test --grep "@smoke" --project=chromium
+    command: npx cypress run --browser chrome --env grepTags=@smoke
 
   # ---------------------------------------------------------------------------
   # smoky — Run a single ticket end-to-end (for manual testing)

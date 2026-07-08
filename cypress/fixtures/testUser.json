@@ -1,0 +1,5 @@
+{
+  "_comment": "Placeholder credentials for a user seeded in the target environment. cypress-realworld-app seeds all demo users with the password 's3cret' (public in its own test suite); the username is environment-specific. Override both via Cypress.env(testUsername/testPassword) — e.g. CYPRESS_testUsername=... CYPRESS_testPassword=... in CI secrets — never commit real credentials here.",
+  "username": "testuser",
+  "password": "s3cret"
+}

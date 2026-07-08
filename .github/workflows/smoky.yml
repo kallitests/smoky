@@ -1,9 +1,10 @@
-name: Smoky — Playwright Smoke Tests
+name: Smoky — Cypress Smoke Tests
 
 # =============================================================================
 # Trigger: repository_dispatch event sent by the Smoky Python agent.
-# The agent encodes the .feature file in base64 and sends it in the payload.
-# This workflow decodes it, runs the tests, and uploads results as artifacts.
+# The agent encodes the generated Cypress spec file in base64 and sends it in
+# the payload. This workflow decodes it, runs the tests, and uploads results
+# as artifacts.
 # =============================================================================
 
 on:
@@ -25,11 +26,11 @@ on:
         options: [staging, preprod, production]
 
 env:
-  ISSUE_KEY:        ${{ github.event.client_payload.issue_key || github.event.inputs.issue_key }}
-  FEATURE_FILENAME: ${{ github.event.client_payload.feature_file_name || 'manual.feature' }}
-  FEATURE_B64:      ${{ github.event.client_payload.feature_file_b64 || '' }}
-  PRIORITY:         ${{ github.event.client_payload.priority || 'Major' }}
-  ENVIRONMENT:      ${{ github.event.client_payload.environment || github.event.inputs.environment || 'staging' }}
+  ISSUE_KEY:      ${{ github.event.client_payload.issue_key || github.event.inputs.issue_key }}
+  SPEC_FILENAME:  ${{ github.event.client_payload.spec_file_name || 'manual.cy.ts' }}
+  SPEC_B64:       ${{ github.event.client_payload.spec_file_b64 || '' }}
+  PRIORITY:       ${{ github.event.client_payload.priority || 'Major' }}
+  ENVIRONMENT:    ${{ github.event.client_payload.environment || github.event.inputs.environment || 'staging' }}
 
 jobs:
   smoke-tests:
@@ -45,17 +46,17 @@ jobs:
         uses: actions/checkout@v4
 
       # -----------------------------------------------------------------------
-      # 2. Decode and write the .feature file sent by the agent
+      # 2. Decode and write the Cypress spec file sent by the agent
       # -----------------------------------------------------------------------
-      - name: Write feature file
+      - name: Write spec file
         run: |
-          mkdir -p tests/features
-          if [ -n "$FEATURE_B64" ]; then
-            echo "$FEATURE_B64" | base64 --decode > "tests/features/$FEATURE_FILENAME"
-            echo "✅ Feature file written: tests/features/$FEATURE_FILENAME"
-            cat "tests/features/$FEATURE_FILENAME"
+          mkdir -p cypress/e2e/generated
+          if [ -n "$SPEC_B64" ]; then
+            echo "$SPEC_B64" | base64 --decode > "cypress/e2e/generated/$SPEC_FILENAME"
+            echo "✅ Spec file written: cypress/e2e/generated/$SPEC_FILENAME"
+            cat "cypress/e2e/generated/$SPEC_FILENAME"
           else
-            echo "⚠️ No feature file in payload — using existing features"
+            echo "⚠️ No spec file in payload — using existing specs"
           fi
 
       # -----------------------------------------------------------------------
@@ -68,20 +69,22 @@ jobs:
           cache: "npm"
 
       # -----------------------------------------------------------------------
-      # 4. Install Node dependencies
+      # 4. Install Node dependencies (Cypress binary installs via postinstall)
       # -----------------------------------------------------------------------
       - name: Install dependencies
         run: npm ci
 
       # -----------------------------------------------------------------------
-      # 5. Install Playwright browsers
+      # 5. Verify the Cypress binary is installed and runnable
+      #    (ubuntu-latest ships Chrome preinstalled — no browser install step)
       # -----------------------------------------------------------------------
-      - name: Install Playwright browsers
-        run: npx playwright install chromium --with-deps
+      - name: Verify Cypress
+        run: npx cypress verify
 
       # -----------------------------------------------------------------------
-      # 6. Run Playwright smoke tests
-      #    Filter by @smoke tag + issue key tag to run only this ticket's tests
+      # 6. Run Cypress smoke tests
+      #    grepTags uses "+" for AND — only tests tagged BOTH @smoke and the
+      #    issue key run, via @cypress/grep
       # -----------------------------------------------------------------------
       - name: Run smoke tests
         id: run_tests
@@ -89,36 +92,43 @@ jobs:
           BASE_URL: ${{ secrets[format('{0}_BASE_URL', env.ENVIRONMENT)] || secrets.STAGING_BASE_URL }}
           ANTHROPIC_API_KEY: ${{ secrets.ANTHROPIC_API_KEY }}
         run: |
-          npx playwright test \
-            --grep "@smoke.*@${{ env.ISSUE_KEY }}" \
-            --project=chromium \
-            --reporter=html,json \
-            --output=test-results
+          npx cypress run \
+            --browser chrome \
+            --env grepTags="@smoke+@${{ env.ISSUE_KEY }}"
         continue-on-error: true  # Don't fail the job here — we publish results first
 
       # -----------------------------------------------------------------------
       # 7. Build smoky-results.json for the agent to consume
+      #    (parses the merged mochawesome JSON from cypress-mochawesome-reporter)
       # -----------------------------------------------------------------------
       - name: Build results JSON
         if: always()
         run: |
           node -e "
           const fs = require('fs');
-          const raw = fs.existsSync('test-results/results.json')
-            ? JSON.parse(fs.readFileSync('test-results/results.json', 'utf8'))
-            : { stats: { expected: 0, unexpected: 0 }, suites: [] };
+          const raw = fs.existsSync('cypress-report/mochawesome.json')
+            ? JSON.parse(fs.readFileSync('cypress-report/mochawesome.json', 'utf8'))
+            : { stats: { passes: 0, failures: 0, duration: 0 }, results: [] };
 
-          const passed  = raw.stats?.expected  || 0;
-          const failed  = raw.stats?.unexpected || 0;
-          const duration = raw.stats?.duration  || 0;
+          const passed   = raw.stats?.passes   || 0;
+          const failed   = raw.stats?.failures || 0;
+          const duration = raw.stats?.duration || 0;
 
-          const scenarios = (raw.suites || []).flatMap(s =>
-            (s.specs || []).map(spec => ({
-              name:        spec.title,
-              status:      spec.ok ? 'passed' : 'failed',
-              duration_ms: spec.tests?.[0]?.results?.[0]?.duration || 0,
-              error:       spec.ok ? null : (spec.tests?.[0]?.results?.[0]?.error?.message || 'unknown'),
-            }))
+          function collectTests(suite) {
+            let tests = (suite.tests || []).map(t => ({
+              name:        t.title,
+              status:      t.state === 'passed' ? 'passed' : 'failed',
+              duration_ms: t.duration || 0,
+              error:       t.state === 'passed' ? null : (t.err?.message || 'unknown'),
+            }));
+            for (const child of suite.suites || []) {
+              tests = tests.concat(collectTests(child));
+            }
+            return tests;
+          }
+
+          const scenarios = (raw.results || []).flatMap(r =>
+            (r.suites || []).flatMap(collectTests)
           );
 
           const results = {
@@ -145,8 +155,8 @@ jobs:
         uses: actions/upload-artifact@v4
         if: always()
         with:
-          name: playwright-report-${{ env.ISSUE_KEY }}
-          path: playwright-report/
+          name: cypress-report-${{ env.ISSUE_KEY }}
+          path: cypress-report/
           retention-days: 14
 
       # -----------------------------------------------------------------------
@@ -169,9 +179,8 @@ jobs:
         with:
           name: failure-artifacts-${{ env.ISSUE_KEY }}
           path: |
-            test-results/**/*.png
-            test-results/**/*.webm
-            test-results/**/*.zip
+            cypress/screenshots/**/*.png
+            cypress/videos/**/*.mp4
           retention-days: 7
 
       # -----------------------------------------------------------------------

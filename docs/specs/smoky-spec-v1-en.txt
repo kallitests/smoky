@@ -7,11 +7,18 @@
 VISION
 ------
 Smoky is an autonomous Claude agent that continuously monitors Jira
-tickets, generates Gherkin scenarios from User Stories, runs them in a
-dockerized Playwright MCP pipeline via GitHub Actions, and publishes the
+tickets, generates runnable Cypress specs directly from User Stories, runs
+them in a dockerized Cypress pipeline via GitHub Actions, and publishes the
 results to Power BI + Slack — with no human intervention.
 
 A dev creates a ticket. Smoky does the rest.
+
+NOTE: this document covers the AI agent (Jira -> spec -> CI -> report). For
+the full test pyramid, pre-commit gate, CI trigger strategy, reporting and
+alerting architecture — including hand-authored, BDD-traced User Stories
+(e.g. features/US-001-login-logout.feature) that coexist alongside this
+agent's autonomous per-ticket flow — see
+docs/architecture/architecture-pipeline-cicd-sdet.md.
 
 --------------------------------------------------------------------------------
 WHY THIS PROJECT EXISTS (STAR)
@@ -38,8 +45,8 @@ WHY THIS PROJECT EXISTS (STAR)
   Action
   ──────
   Smoky was built as an autonomous Claude agent that watches Jira, converts
-  User Stories into Gherkin scenarios, self-validates its own output for
-  hallucinations and coverage gaps, triggers a Dockerized Playwright MCP
+  User Stories directly into runnable Cypress specs, self-validates its own
+  output for hallucinations and coverage gaps, triggers a Dockerized Cypress
   pipeline via GitHub Actions, and reports results in plain language to
   Slack, Power BI, and back onto the ticket itself — end to end, zero human
   intervention. On top of that, the agent's own output is continuously
@@ -94,8 +101,8 @@ GLOBAL WORKFLOW — OVERVIEW
   │  │          │───▶│  New         │───▶│                              │  │
   │  │  Creates │    │  ticket      │    │  1. Detects the ticket       │  │
   │  │  Jira    │    │  "Ready for  │    │  2. Reads the User Story     │  │
-  │  │  ticket  │    │   Smoky"     │    │  3. Generates Gherkin        │  │
-  │  └──────────┘    └──────────────┘    │     scenarios                │  │
+  │  │  ticket  │    │   Smoky"     │    │  3. Generates a Cypress   │  │
+  │  └──────────┘    └──────────────┘    │     spec (.cy.ts)            │  │
   │                                      │  4. Validates consistency    │  │
   │                                      │  5. Triggers GitHub Actions  │  │
   │                                      └──────────────┬───────────────┘  │
@@ -104,7 +111,7 @@ GLOBAL WORKFLOW — OVERVIEW
   │                          ┌──────────────────────────────────────────┐  │
   │                          │   GITHUB ACTIONS — CI/CD PIPELINE        │  │
   │                          │                                          │  │
-  │                          │   Docker ──▶ Playwright MCP ──▶ Tests   │  │
+  │                          │   Docker ──▶ Cypress ──▶ Tests           │  │
   │                          │                                          │  │
   │                          └──────────────────┬───────────────────────┘  │
   │                                             │                          │
@@ -151,58 +158,58 @@ STEP 1 — JIRA TICKET DETECTION
 
 ──────────────────────────────────────────────────────────────────────────────
 
-STEP 2 — GHERKIN GENERATION BY CLAUDE
-─────────────────────────────────────
+STEP 2 — CYPRESS SPEC GENERATION BY CLAUDE
+────────────────────────────────────────────
 
   Input: raw Jira ticket content (JSON)
-  Output: structured Gherkin .feature file
+  Output: runnable Cypress .cy.ts spec file (no Gherkin/BDD intermediate —
+          Claude writes the test code directly)
 
   Claude system prompt (simplified):
   ┌─────────────────────────────────────────────────────────────────────┐
-  │  You are Smoky, a QA expert specialized in Playwright smoke tests.  │
-  │  From the User Story below, generate Gherkin scenarios in           │
-  │  English.                                                            │
+  │  You are Smoky, a QA expert specialized in Cypress smoke tests.     │
+  │  From the User Story below, generate a Cypress spec directly in     │
+  │  TypeScript.                                                         │
   │                                                                     │
   │  Rules:                                                             │
-  │  - 1 Feature per ticket                                             │
-  │  - At least 1 Happy Path scenario required                          │
-  │  - At least 1 negative-case scenario                                │
-  │  - Use the tags: @smoke @critical @{issue_key}                      │
+  │  - 1 top-level describe() block per ticket                          │
+  │  - At least 1 Happy Path it() required                              │
+  │  - At least 1 negative-case it()                                    │
+  │  - Tag the describe title: @smoke @critical @{issue_key}            │
   │  - Selectors: prefer data-test attributes                           │
   │  - No hallucinations: if info is missing, add a comment             │
-  │    # TODO: clarify with the team                                    │
-  │  - Format: strict Gherkin (Feature / Scenario / Given When Then)    │
+  │    // TODO: clarify with the team                                   │
+  │  - Format: valid TypeScript, standard Cypress commands only         │
   └─────────────────────────────────────────────────────────────────────┘
 
   Example output for PROJ-142:
 
-    @smoke @critical @PROJ-142
-    Feature: User authentication — Login flow
-      As a registered user
-      I want to log in with valid credentials
-      So that I can access my dashboard
+    // PROJ-142 — User authentication — Login flow
+    describe("User authentication — Login flow @smoke @critical @PROJ-142", () => {
+      it("logs in successfully with valid credentials", () => {
+        cy.visit("/login");
+        cy.get('[data-test="username"]').type("standard_user");
+        cy.get('[data-test="password"]').type("secret_sauce");
+        cy.get('[data-test="login-button"]').click();
+        cy.url().should("include", "/inventory.html");
+        cy.get(".inventory_list").should("be.visible");
+      });
 
-      Scenario: Successful login with valid credentials
-        Given I am on the login page
-        When I fill "[data-test='username']" with "standard_user"
-        And I fill "[data-test='password']" with "secret_sauce"
-        And I click "[data-test='login-button']"
-        Then I should be redirected to "/inventory.html"
-        And I should see the product list
-
-      Scenario: Login fails with invalid password
-        Given I am on the login page
-        When I fill "[data-test='username']" with "standard_user"
-        And I fill "[data-test='password']" with "wrong_password"
-        And I click "[data-test='login-button']"
-        Then I should see an error message containing "do not match"
-        And I should remain on the login page
+      it("fails to log in with an invalid password", () => {
+        cy.visit("/login");
+        cy.get('[data-test="username"]').type("standard_user");
+        cy.get('[data-test="password"]').type("wrong_password");
+        cy.get('[data-test="login-button"]').click();
+        cy.contains("do not match").should("be.visible");
+        cy.url().should("include", "/login");
+      });
+    });
 
   Post-generation validation (Claude self-critique):
-    - Gherkin/User Story consistency: score 0–10
+    - Spec/User Story consistency: score 0–10
     - Hallucination detection: invented selectors flagged
     - Completeness: Happy Path + negative case present?
-    - Format compliance: valid Feature/Scenario/Given/When/Then
+    - Format compliance: valid describe/it structure, proper tags
 
 ──────────────────────────────────────────────────────────────────────────────
 
@@ -217,7 +224,7 @@ STEP 3 — GITHUB ACTIONS TRIGGER
   │    "event_type": "smoky-trigger",                                  │
   │    "client_payload": {                                             │
   │      "issue_key": "PROJ-142",                                      │
-  │      "feature_file": "proj_142_login.feature",                    │
+  │      "spec_file": "proj_142_login.cy.ts",                         │
   │      "priority": "critical",                                       │
   │      "environment": "staging"                                      │
   │    }                                                               │
@@ -235,58 +242,60 @@ STEP 3 — GITHUB ACTIONS TRIGGER
         runs-on: ubuntu-latest
         steps:
           - Checkout repo
-          - Write feature file (from payload)
-          - Build Docker image (Playwright MCP)
-          - Run Playwright MCP tests
-          - Export results to JSON
+          - Write spec file (from payload)
+          - Install deps + verify Cypress binary
+          - Run Cypress tests (--env grepTags="@smoke+@{issue_key}")
+          - Export results to JSON (mochawesome)
           - Upload artifacts
           - Trigger Power BI refresh
           - Notify Slack
 
 ──────────────────────────────────────────────────────────────────────────────
 
-STEP 4 — DOCKERIZED PLAYWRIGHT MCP EXECUTION
-──────────────────────────────────────────────
+STEP 4 — DOCKERIZED CYPRESS EXECUTION
+───────────────────────────────────────
 
-  Docker image: mcr.microsoft.com/playwright:v1.44.0-jammy
+  Docker image: cypress/browsers:node20.16.0-chrome127-ff128
 
   Smoky Dockerfile:
   ┌────────────────────────────────────────────────────────────────────┐
-  │  FROM mcr.microsoft.com/playwright:v1.44.0-jammy                  │
+  │  FROM cypress/browsers:node20.16.0-chrome127-ff128                │
   │  WORKDIR /app                                                      │
   │  COPY package*.json ./                                             │
   │  RUN npm ci                                                        │
   │  COPY . .                                                          │
-  │  ENV PLAYWRIGHT_MCP=true                                           │
+  │  ENV CI=true                                                       │
   │  ENV BASE_URL=${BASE_URL}                                          │
-  │  CMD ["npx", "playwright", "test", "--grep", "@smoke"]            │
+  │  CMD ["npx", "cypress", "run", "--browser", "chrome",             │
+  │        "--env", "grepTags=@smoke"]                                 │
   └────────────────────────────────────────────────────────────────────┘
 
-  Playwright MCP config:
-    - The Gherkin scenario is converted into MCP instructions by Claude
-    - Claude drives the browser via MCP tools (navigate, click,
-      fill, screenshot, assert)
-    - Each Gherkin step = one MCP tool call
+  Execution model:
+    - Claude writes the full Cypress spec (.cy.ts) once, at generation
+      time (Step 2) — not step-by-step at runtime
+    - CI just runs that already-written spec with the standard Cypress
+      test runner — deterministic, no LLM calls during execution
+    - @cypress/grep filters which describe/it blocks run, by tag:
+      --env grepTags="@smoke+@{issue_key}" (AND match)
 
-  Gherkin → MCP flow:
+  Generated spec structure (from Step 2 example):
   ┌────────────────────────────────────────────────────────────────────┐
-  │  "Given I am on the login page"                                    │
-  │    → mcp.navigate("https://staging.app.com/login")                │
-  │                                                                    │
-  │  "When I fill [data-test='username'] with 'standard_user'"        │
-  │    → mcp.fill("[data-test='username']", "standard_user")          │
-  │                                                                    │
-  │  "Then I should see the product list"                              │
-  │    → mcp.assert_visible(".inventory_list")                        │
-  │    → mcp.screenshot("post_login.png")                             │
+  │  describe("... @smoke @critical @PROJ-142", () => {               │
+  │    it("logs in successfully with valid credentials", () => {      │
+  │      cy.visit("/login");                                          │
+  │      cy.get('[data-test="username"]').type("standard_user");      │
+  │      cy.get('[data-test="password"]').type("secret_sauce");       │
+  │      cy.get('[data-test="login-button"]').click();                │
+  │      cy.url().should("include", "/inventory.html");               │
+  │    });                                                             │
+  │  });                                                               │
   └────────────────────────────────────────────────────────────────────┘
 
   Generated results:
-    - smoky-results.json   (pass/fail per scenario + duration + logs)
-    - screenshots/         (captures on failure)
-    - videos/              (recordings on failure)
-    - traces/              (Playwright trace .zip)
-    - playwright-report/   (HTML report)
+    - smoky-results.json      (pass/fail per test + duration + logs)
+    - cypress/screenshots/    (captures on failure)
+    - cypress/videos/         (recordings, CI only)
+    - cypress-report/         (mochawesome HTML + merged JSON report)
 
 ──────────────────────────────────────────────────────────────────────────────
 
@@ -348,11 +357,11 @@ STEP 6 — ERROR HANDLING (ROBUSTNESS)
   | Poorly written Jira ticket   | Claude requests clarifications        |
   |                              | via Jira comment + Slack alert        |
   | Hallucination detected       | Scenario quarantined + flagged        |
-  |                              | # SMOKY_UNCERTAIN in the .feature     |
+  |                              | // SMOKY_UNCERTAIN in the .cy.ts spec |
   | LLM timeout (>30s)           | Retry x3 then Slack alert             |
   | GitHub Actions failure       | Automatic re-run x1 then escalation   |
   | Flaky test (>2 unstable runs)| Marked @flaky + separate report       |
-  | Playwright timeout           | Screenshot + Claude NL diagnosis      |
+  | Cypress timeout              | Screenshot + Claude NL diagnosis      |
   | Power BI API down            | CSV fallback in CI artifacts          |
   | Slack webhook down           | Email fallback to configured address  |
 
@@ -366,15 +375,15 @@ TECH STACK
   Orchestration            | LangChain · LangGraph (state graph)
   Jira monitoring          | Python · Jira API v3 · FastAPI (webhook)
   Scheduler                | APScheduler (5 min cron) OR Jira webhook
-  Gherkin generation        | Claude + structured prompt engineering
+  Cypress spec generation   | Claude + structured prompt engineering
   Validation                | Claude self-critique + DeepEval (consistency)
   CI/CD                     | GitHub Actions (repository_dispatch)
-  Test execution             | Playwright MCP · TypeScript
-  Containerization           | Docker · mcr.microsoft.com/playwright
+  Test execution             | Cypress · TypeScript · @cypress/grep
+  Containerization           | Docker · cypress/browsers
   Reporting                 | Power BI API · Azure Blob Storage
   Notifications              | Slack API (Incoming Webhooks)
   Secrets management          | GitHub Secrets · .env
-  Observability               | LangSmith (LLM traces) · Playwright Trace
+  Observability               | LangSmith (LLM traces) · Cypress screenshots/videos
 
 --------------------------------------------------------------------------------
 REPO FILE ARCHITECTURE
@@ -384,22 +393,23 @@ REPO FILE ARCHITECTURE
   ├── agent/
   │   ├── smoky_agent.py          # Main LangGraph agent
   │   ├── jira_watcher.py         # Ticket detection + scheduler
-  │   ├── gherkin_generator.py    # Gherkin generation + validation
+  │   ├── spec_generator.py       # Cypress spec generation + validation
   │   ├── github_dispatcher.py    # GitHub Actions trigger
   │   └── report_publisher.py     # Power BI + Slack + Jira update
   │
   ├── prompts/
   │   ├── system_prompt.txt       # Smoky system prompt
-  │   ├── gherkin_template.txt    # Generation template
+  │   ├── spec_template.txt       # Generation template
   │   └── slack_report.txt        # Slack NL report template
   │
   ├── tests/
-  │   ├── features/               # Dynamically generated .feature files
-  │   ├── step_definitions/       # Playwright MCP steps
-  │   └── mcp_runner.ts           # Playwright MCP runner
+  │   ├── generated/               # Dynamically generated .cy.ts specs
+  │   └── support/
+  │       └── e2e.ts               # @cypress/grep + reporter registration
   │
   ├── docker/
-  │   ├── Dockerfile              # Playwright image
+  │   ├── Dockerfile              # Cypress image
+  │   ├── Dockerfile.agent        # Python agent image
   │   └── docker-compose.yml
   │
   ├── .github/
@@ -460,16 +470,17 @@ ROADMAP — DEVELOPMENT PHASES
   Phase 1 — MVP (4–6 weeks)
   ──────────────────────────────
   ✓ Jira ticket detection via polling (5 min cron)
-  ✓ Claude Gherkin generation (Happy Path + 1 negative case)
+  ✓ Claude Cypress spec generation (Happy Path + 1 negative case, no
+    Gherkin/BDD layer)
   ✓ GitHub Actions trigger via repository_dispatch
-  ✓ Dockerized Playwright MCP execution
+  ✓ Dockerized Cypress execution
   ✓ Simple text Slack notification
   ✓ Jira status update
 
   Phase 2 — Consolidation (6–10 weeks)
   ─────────────────────────────────────────
   ○ Real-time Jira webhook (replaces polling)
-  ○ DeepEval Gherkin validation (consistency score)
+  ○ DeepEval spec validation (consistency score)
   ○ Full Power BI dashboard
   ○ Robust error handling (retry, fallback)
   ○ Natural-language Slack report (Claude)
@@ -478,9 +489,9 @@ ROADMAP — DEVELOPMENT PHASES
   Phase 3 — Intelligence (10–16 weeks)
   ─────────────────────────────────────────
   ○ Parallel multi-ticket processing (LangGraph parallel nodes)
-  ○ Benchmarks: Claude vs GPT-4o on Gherkin quality
+  ○ Benchmarks: Claude vs GPT-4o on spec quality
   ○ Learning: Smoky remembers patterns per module
-  ○ Prompt regression: alert if Gherkin quality drops
+  ○ Prompt regression: alert if spec quality drops
   ○ Smoky REST API: trigger via curl, Postman, external webhook
   ○ Minimal web interface: real-time run status
 
@@ -490,31 +501,31 @@ ROADMAP — DEVELOPMENT PHASES
   means Smoky itself has to be tested. A traditional test suite checks that
   code does what it's supposed to do; an LLM-based agent needs a different
   kind of scrutiny, because its output is non-deterministic, can drift over
-  time, and can fail silently — a wrong Gherkin scenario looks exactly as
+  time, and can fail silently — a wrong Cypress spec looks exactly as
   plausible as a correct one until someone runs it.
 
   Why AI testing is mandatory here, not optional:
     - Non-determinism: the same Jira ticket can produce slightly different
-      Gherkin output on two separate runs. LLM output must be evaluated on
+      spec output on two separate runs. LLM output must be evaluated on
       quality ranges, not exact equality.
     - Hallucination risk: Claude could invent a selector, an assumed field,
       or a business rule that was never in the User Story.
     - Silent quality drift: a prompt tweak or model version change can
-      quietly degrade Gherkin quality with no error thrown.
+      quietly degrade spec quality with no error thrown.
     - Trust in an unattended agent: Smoky runs with zero human review of
-      generated scenarios before they hit CI — so its output quality has
+      generated specs before they hit CI — so its output quality has
       to be checked automatically, on every run.
-    - Compounding downstream cost: a bad Gherkin scenario gets committed,
+    - Compounding downstream cost: a bad Cypress spec gets committed,
       run repeatedly in CI, and can create false confidence ("tests are
       green") while covering the wrong behavior entirely.
 
   Planned AI testing stack:
-    ○ DeepEval        — scores each generated .feature file against the
+    ○ DeepEval        — scores each generated .cy.ts spec against the
                          source User Story: relevance, faithfulness (no
                          hallucinated selectors/steps), completeness.
                          Runs as an automated gate in the CI pipeline.
-    ○ RAGAS           — measures Gherkin/User Story consistency as a
-                         faithfulness problem: does the scenario reflect
+    ○ RAGAS           — measures spec/User Story consistency as a
+                         faithfulness problem: does the spec reflect
                          the acceptance criteria, or did Claude fill gaps
                          with assumptions?
     ○ Promptfoo        — regression testing between prompt/model versions;
@@ -527,7 +538,7 @@ ROADMAP — DEVELOPMENT PHASES
                          around the AI core (Jira parsing, dispatch
                          payloads, Slack/Power BI formatting).
     ○ Golden dataset   — curated, versioned set of reference Jira tickets
-                         with known-good expected Gherkin output, used as
+                         with known-good expected spec output, used as
                          the baseline for every DeepEval/RAGAS/Promptfoo run.
     ○ Automated quality gate in CI — a run is blocked from reaching
                          production if the DeepEval/RAGAS score drops below
@@ -540,7 +551,7 @@ QUALITY CRITERIA — HOW TO EVALUATE SMOKY
 
   Dimension                     | Target metric
   ─────────────────────────────|──────────────────────────────────────────
-  Gherkin/Story consistency     | Claude self-critique score ≥ 8/10
+  Spec/Story consistency        | Claude self-critique score ≥ 8/10
   Hallucinations                 | 0 uncommented invented selectors
   Coverage                       | 1 Happy Path + 1 negative case minimum
   Detection → results delay      | < 10 minutes end-to-end
@@ -556,7 +567,7 @@ QA QUALIFICATIONS — WHAT SMOKY TESTS ON ITSELF
 
   - Pytest          → unit tests for each Python module
   - DeepEval        → quality evaluation of generated scenarios
-  - RAGAS           → User Story / Gherkin output consistency
+  - RAGAS           → User Story / Cypress spec output consistency
   - LangSmith       → traces and observability of each LLM run
   - Promptfoo       → prompt regression between versions
 

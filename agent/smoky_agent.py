@@ -3,7 +3,7 @@
 agent/smoky_agent.py — Smoky main agent orchestrator (LangGraph)
 
 This is the brain of Smoky. It orchestrates the full pipeline:
-  Jira ticket detection → Gherkin generation → Validation →
+  Jira ticket detection → Cypress spec generation → Validation →
   GitHub Actions dispatch → Results publication (Slack + Power BI + Jira)
 
 Each step is a LangGraph node. The graph handles retries, error branches,
@@ -17,7 +17,7 @@ from langgraph.graph import StateGraph, END
 from langgraph.graph.message import add_messages
 
 from agent.jira_watcher import JiraWatcher
-from agent.gherkin_generator import GherkinGenerator
+from agent.spec_generator import SpecGenerator
 from agent.github_dispatcher import GitHubDispatcher
 from agent.report_publisher import ReportPublisher
 
@@ -40,8 +40,8 @@ class SmokyState(TypedDict):
     environment: str
 
     # Generated
-    feature_file_content: str
-    feature_file_name: str
+    spec_file_content: str
+    spec_file_name: str
     validation_score: float
     validation_issues: list[str]
 
@@ -86,18 +86,18 @@ def fetch_ticket(state: SmokyState) -> SmokyState:
 
 
 # ---------------------------------------------------------------------------
-# Node 2 — Generate Gherkin scenarios via Claude
+# Node 2 — Generate Cypress spec via Claude
 # ---------------------------------------------------------------------------
 
-def generate_gherkin(state: SmokyState) -> SmokyState:
+def generate_spec(state: SmokyState) -> SmokyState:
     """
-    Sends the User Story to Claude and receives structured Gherkin scenarios.
+    Sends the User Story to Claude and receives a runnable Cypress spec.
     Ensures at least 1 Happy Path and 1 negative scenario are present.
     """
-    logger.info(f"[smoky] Generating Gherkin for {state['issue_key']}")
-    generator = GherkinGenerator()
+    logger.info(f"[smoky] Generating Cypress spec for {state['issue_key']}")
+    generator = SpecGenerator()
     try:
-        feature_content, file_name = generator.generate(
+        spec_content, file_name = generator.generate(
             issue_key=state["issue_key"],
             summary=state["summary"],
             description=state["description"],
@@ -107,20 +107,20 @@ def generate_gherkin(state: SmokyState) -> SmokyState:
         )
         return {
             **state,
-            "feature_file_content": feature_content,
-            "feature_file_name": file_name,
+            "spec_file_content": spec_content,
+            "spec_file_name": file_name,
             "status": "generated",
         }
     except Exception as e:
-        logger.error(f"[smoky] Gherkin generation failed: {e}")
+        logger.error(f"[smoky] Spec generation failed: {e}")
         return {**state, "error": str(e), "status": "failed"}
 
 
 # ---------------------------------------------------------------------------
-# Node 3 — Validate Gherkin quality (Claude self-critique)
+# Node 3 — Validate spec quality (Claude self-critique)
 # ---------------------------------------------------------------------------
 
-def validate_gherkin(state: SmokyState) -> SmokyState:
+def validate_spec(state: SmokyState) -> SmokyState:
     """
     Claude validates its own output:
       - Coherence score (0–10) vs the original User Story
@@ -128,12 +128,12 @@ def validate_gherkin(state: SmokyState) -> SmokyState:
       - Coverage check (Happy Path + negative case present)
     Blocks dispatch if score < 6.
     """
-    logger.info(f"[smoky] Validating Gherkin for {state['issue_key']}")
-    generator = GherkinGenerator()
+    logger.info(f"[smoky] Validating Cypress spec for {state['issue_key']}")
+    generator = SpecGenerator()
     try:
         score, issues = generator.validate(
             story=state["description"],
-            feature=state["feature_file_content"],
+            spec=state["spec_file_content"],
         )
         logger.info(f"[smoky] Validation score: {score}/10 | Issues: {issues}")
         return {
@@ -153,17 +153,17 @@ def validate_gherkin(state: SmokyState) -> SmokyState:
 def dispatch_pipeline(state: SmokyState) -> SmokyState:
     """
     Sends a repository_dispatch event to GitHub Actions with:
-      - The .feature file content (base64 encoded)
+      - The Cypress spec file content (base64 encoded)
       - The issue key, priority, and target environment
-    GitHub Actions picks it up and runs the Dockerized Playwright MCP pipeline.
+    GitHub Actions picks it up and runs the Dockerized Cypress pipeline.
     """
     logger.info(f"[smoky] Dispatching pipeline for {state['issue_key']}")
     dispatcher = GitHubDispatcher()
     try:
         run_id = dispatcher.dispatch(
             issue_key=state["issue_key"],
-            feature_file_name=state["feature_file_name"],
-            feature_file_content=state["feature_file_content"],
+            spec_file_name=state["spec_file_name"],
+            spec_file_content=state["spec_file_content"],
             priority=state["priority"],
             environment=state.get("environment", "staging"),
         )
@@ -264,10 +264,10 @@ def route_after_validation(state: SmokyState) -> str:
 
 
 def route_after_fetch(state: SmokyState) -> str:
-    """Routes to Gherkin generation if fetch succeeded."""
+    """Routes to spec generation if fetch succeeded."""
     if state["status"] == "failed":
         return "handle_error"
-    return "generate_gherkin"
+    return "generate_spec"
 
 
 def route_after_dispatch(state: SmokyState) -> str:
@@ -297,8 +297,8 @@ def build_smoky_graph() -> StateGraph:
 
     # Register nodes
     graph.add_node("fetch_ticket", fetch_ticket)
-    graph.add_node("generate_gherkin", generate_gherkin)
-    graph.add_node("validate_gherkin", validate_gherkin)
+    graph.add_node("generate_spec", generate_spec)
+    graph.add_node("validate_spec", validate_spec)
     graph.add_node("dispatch_pipeline", dispatch_pipeline)
     graph.add_node("poll_results", poll_results)
     graph.add_node("publish_results", publish_results)
@@ -309,8 +309,8 @@ def build_smoky_graph() -> StateGraph:
 
     # Edges with routing
     graph.add_conditional_edges("fetch_ticket", route_after_fetch)
-    graph.add_edge("generate_gherkin", "validate_gherkin")
-    graph.add_conditional_edges("validate_gherkin", route_after_validation)
+    graph.add_edge("generate_spec", "validate_spec")
+    graph.add_conditional_edges("validate_spec", route_after_validation)
     graph.add_conditional_edges("dispatch_pipeline", route_after_dispatch)
     graph.add_conditional_edges("poll_results", route_after_results)
     graph.add_edge("publish_results", END)
@@ -338,8 +338,8 @@ def run_smoky(issue_key: str, environment: str = "staging") -> dict:
         "priority": "Major",
         "component": "unknown",
         "environment": environment,
-        "feature_file_content": "",
-        "feature_file_name": "",
+        "spec_file_content": "",
+        "spec_file_name": "",
         "validation_score": 0.0,
         "validation_issues": [],
         "dispatch_run_id": "",

@@ -2,8 +2,9 @@
 """
 agent/github_dispatcher.py — GitHub Actions trigger + results poller
 
-Sends a repository_dispatch event to GitHub Actions with the .feature file.
-Then polls the run until completion and downloads the JSON results artifact.
+Sends a repository_dispatch event to GitHub Actions with the generated
+Cypress spec file. Then polls the run until completion and downloads the
+JSON results artifact.
 """
 
 import os
@@ -30,26 +31,26 @@ class GitHubDispatcher:
     def dispatch(
         self,
         issue_key: str,
-        feature_file_name: str,
-        feature_file_content: str,
+        spec_file_name: str,
+        spec_file_content: str,
         priority: str,
         environment: str,
     ) -> str:
         """
         Sends a repository_dispatch event to GitHub Actions.
-        The .feature file is base64-encoded in the payload so no file I/O
+        The Cypress spec file is base64-encoded in the payload so no file I/O
         is needed between the agent and the CI runner.
 
         Returns the run_id of the triggered workflow (by polling briefly).
         """
-        encoded = base64.b64encode(feature_file_content.encode()).decode()
+        encoded = base64.b64encode(spec_file_content.encode()).decode()
 
         payload = {
             "event_type": "smoky-trigger",
             "client_payload": {
                 "issue_key": issue_key,
-                "feature_file_name": feature_file_name,
-                "feature_file_b64": encoded,
+                "spec_file_name": spec_file_name,
+                "spec_file_b64": encoded,
                 "priority": priority,
                 "environment": environment,
             },
