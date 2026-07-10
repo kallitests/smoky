@@ -21,6 +21,7 @@
 - [Why this project exists (STAR)](#-why-this-project-exists-star)
 - [How it works](#-how-it-works)
 - [Workflow](#-workflow)
+- [Smoky-RAG](#-smoky-rag)
 - [Stack](#-stack)
 - [Project Structure](#-project-structure)
 - [Prerequisites](#-prerequisites)
@@ -160,6 +161,43 @@ Results are pushed to Power BI. The Jira ticket is transitioned to `Smoke Done` 
 
 ---
 
+## 🧠 Smoky-RAG
+
+> [!NOTE]
+> **Planned for Phase 2** — Smoky-RAG is designed but not yet wired into `agent/spec_generator.py`. See [`docs/specs/smoky-rag-spec-v1-en.txt`](docs/specs/smoky-rag-spec-v1-en.txt) for the full design.
+
+Step 2 above (Cypress spec generation) works from the Jira ticket alone. That's often not enough: a ticket rarely repeats a business rule that's already documented in a PRD, the selectors already used in a neighboring spec, or the response codes exposed by the actual API. **Smoky-RAG** is the retrieval layer that closes that gap — it doesn't replace the ticket, it completes it.
+
+```
+Step 1 (Jira detection) ──▶ [Smoky-RAG: retrieval + rerank] ──▶
+Step 2 (Cypress generation, enriched with retrieved context) ──▶
+Steps 3-6 (unchanged)
+```
+
+**What it indexes:** PRDs, past User Stories, existing Test Cases, API docs (OpenAPI/Swagger), resolved Jira tickets, Confluence pages, Release Notes, Requirements — continuously synced into a vector store (Qdrant), embedded with Voyage AI.
+
+**What it does at generation time:**
+1. Builds a query from the ticket's summary, description, and acceptance criteria
+2. Retrieves the top-k most relevant chunks, reranks down to the top 3-4
+3. Injects them into the Claude prompt as a `RETRIEVED CONTEXT` block, each item tagged with its source (`jira`, `confluence`, `cypress_spec`, `openapi`, `prd`)
+4. If retrieved context contradicts the ticket, Claude prioritizes the ticket and flags the conflict with a `// RAG_CONFLICT` comment instead of silently picking one
+
+**What it unlocks:**
+
+| Capability | Example |
+|---|---|
+| Faster test case generation | Reuses patterns from PRDs/User Stories instead of starting from a blank ticket |
+| Better requirement analysis | Flags ambiguities by comparing the ticket to its PRD/Requirements |
+| Intelligent bug investigation | Surfaces similar historical defects from resolved Jira tickets |
+| Smarter regression testing | Identifies modules impacted by a Release Note automatically |
+| API testing assistance | Generates request/response assertions straight from the OpenAPI spec |
+| Knowledge search | Natural-language Q&A across Jira/Confluence/docs (`/smoky-ask` on Slack) |
+| Faster onboarding | New QA/devs get sourced, natural-language answers instead of digging through 4 tools |
+
+Retrieval quality is evaluated with **RAGAS** — faithfulness ≥ 0.85, context precision ≥ 0.80, context recall ≥ 0.75 — the same evaluation stack already planned for Smoky's own output in [Phase 4](#-roadmap).
+
+---
+
 ## 🧰 Stack
 
 | Layer | Technology |
@@ -176,6 +214,10 @@ Results are pushed to Power BI. The Jira ticket is transitioned to `Smoke Done` 
 | Reporting | Power BI REST API · Slack Incoming Webhooks · `cypress-mochawesome-reporter` · Cypress Cloud (regression sharding) |
 | Observability | [LangSmith](https://smith.langchain.com) · Cypress screenshots/videos |
 | Evaluation | [DeepEval](https://deepeval.com) · RAGAS |
+| RAG — embeddings | [Voyage AI](https://www.voyageai.com) (`voyage-3`) |
+| RAG — vector store | [Qdrant](https://qdrant.tech) |
+| RAG — reranking | Cross-encoder (`bge-reranker`) or Claude |
+| RAG — ingestion sources | Jira · Confluence REST API · Cypress spec repo · OpenAPI/Swagger |
 
 ---
 
@@ -224,9 +266,25 @@ smoky-cypress/
 │   ├── github_dispatcher.py        # GitHub Actions trigger + results polling
 │   └── report_publisher.py         # Slack + Power BI + Jira update
 │
+├── rag/                             # Smoky-RAG — retrieval layer (Phase 2, see above)
+│   ├── ingestion/
+│   │   ├── jira_ingest.py          # Sync resolved tickets -> chunks
+│   │   ├── confluence_ingest.py    # Sync product/QA pages -> chunks
+│   │   ├── cypress_spec_ingest.py  # Sync validated specs -> chunks
+│   │   ├── openapi_ingest.py       # Swagger/OpenAPI parsing -> chunks
+│   │   └── chunker.py              # Shared chunking + overlap logic
+│   ├── retriever.py                 # Vector search + reranking
+│   ├── vector_store.py              # Qdrant/pgvector client wrapper
+│   ├── embeddings.py                # Voyage AI / Claude Embeddings wrapper
+│   └── prompt_context_builder.py    # Formats retrieved chunks for the prompt
+│
 ├── prompts/
 │   ├── system_prompt.txt           # Claude system prompt for Cypress spec generation
-│   └── validation_prompt.txt       # Claude self-critique prompt
+│   ├── validation_prompt.txt       # Claude self-critique prompt
+│   └── rag_context_template.txt    # Smoky-RAG context injection template
+│
+├── evals/
+│   └── ragas_eval.py                # RAGAS faithfulness / context precision & recall
 │
 ├── docker/
 │   ├── Dockerfile                  # Cypress runner image
@@ -237,7 +295,8 @@ smoky-cypress/
 │   ├── architecture/
 │   │   └── architecture-pipeline-cicd-sdet.md  # Target architecture (this layer's spec)
 │   └── specs/
-│       └── smoky-spec-v1-en.txt    # AI agent technical spec
+│       ├── smoky-spec-v1-en.txt    # AI agent technical spec
+│       └── smoky-rag-spec-v1-en.txt # Smoky-RAG technical spec
 │
 ├── utils/
 │   └── env_check.py                # Pre-launch environment validator
@@ -362,6 +421,10 @@ Add these secrets to your GitHub repository (`Settings → Secrets → Actions`)
 | `REDIS_URL` | Flakiness store — point at a managed Redis in CI, not a container |
 | `CYPRESS_RECORD_KEY` | Cypress Cloud (optional — used by `main.yml`/`nightly.yml`) |
 | `LANGCHAIN_API_KEY` | LangSmith API key (optional) |
+| `VOYAGE_API_KEY` | Voyage AI embeddings key (Smoky-RAG, Phase 2) |
+| `QDRANT_URL` / `QDRANT_API_KEY` / `QDRANT_COLLECTION` | Vector store connection (Smoky-RAG) |
+| `CONFLUENCE_BASE_URL` / `CONFLUENCE_EMAIL` / `CONFLUENCE_API_TOKEN` / `CONFLUENCE_SPACE_KEYS` | Confluence ingestion (Smoky-RAG) |
+| `OPENAPI_SPEC_URL` | OpenAPI/Swagger source for API-scenario ingestion (Smoky-RAG) |
 
 ---
 
@@ -530,6 +593,8 @@ Open Jira ticket  |  Full report
 - [ ] Flakiness detection and reporting
 - [ ] Natural-language failure diagnosis (Claude)
 - [ ] Multi-ticket parallel processing
+- [ ] **Smoky-RAG MVP** — Jira + Confluence ingestion, Qdrant vector store, simple top-k retrieval wired into `spec_generator.py` (see [Smoky-RAG](#-smoky-rag))
+- [ ] Smoky-RAG: Cypress spec + OpenAPI ingestion, reranking, `// RAG_CONFLICT` detection, continuous RAGAS evaluation
 
 ### 🔭 Phase 3 — Intelligence
 
@@ -538,6 +603,9 @@ Open Jira ticket  |  Full report
 - [ ] Claude vs GPT-4o benchmark on spec quality
 - [ ] REST API for external triggers (curl, Postman, webhooks)
 - [ ] Minimal web UI for run status and history
+- [ ] Smoky-RAG: similar-bug search from historical Jira tickets (Intelligent Bug Investigation)
+- [ ] Smoky-RAG: automated Release Note impact analysis on affected modules
+- [ ] Smoky-RAG: `/smoky-ask` Slack command for natural-language Knowledge Search
 
 ### 🧪 Phase 4 — AI Testing (testing Smoky's own AI)
 

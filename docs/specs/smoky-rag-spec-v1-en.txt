@@ -1,0 +1,348 @@
+================================================================================
+  SMOKY-RAG — TECHNICAL SPEC v1.0
+  Retrieval-Augmented Generation module for the Smoky agent · Routine Agent
+  Author: Kallitests
+================================================================================
+
+VISION
+------
+Smoky-RAG is the context-retrieval module that feeds the Smoky agent. Where
+Smoky (v1.0) generates its Cypress specs purely from the raw content of a
+Jira ticket, Smoky-RAG enriches that context by first querying a vectorized
+knowledge base — PRDs, past User Stories, existing Test Cases, API docs,
+historical Jira tickets, Confluence pages, Release Notes, Requirements — so
+Claude generates responses that are more accurate, more complete, and less
+prone to hallucination.
+
+Without RAG, the AI answers with generic knowledge. With Smoky-RAG, Smoky
+answers with the actual context of the project.
+
+NOTE: this document covers only the RAG module (retrieval + augmented
+generation). For the full agent flow (Jira detection -> spec generation ->
+CI -> reporting), see smoky-spec-v1.md. Smoky-RAG is a component CALLED BY
+Smoky, not a standalone autonomous agent.
+
+--------------------------------------------------------------------------------
+WHY THIS MODULE EXISTS (STAR)
+--------------------------------------------------------------------------------
+
+  Situation
+  ─────────
+  Smoky v1.0 generates its Cypress specs from the Jira ticket content
+  alone. But a ticket is often incomplete: the description doesn't repeat
+  business rules already documented elsewhere, the selectors already used
+  in other specs of the same module, edge cases already identified in a
+  PRD, or the endpoints exposed in the Swagger doc. Result: Claude fills
+  the gaps with assumptions — the very hallucination risk Smoky v1.0
+  already tries to contain with the "// TODO: clarify with the team" tag,
+  without ever fixing the underlying lack of context.
+
+  Task
+  ────
+  Give Smoky structured access to all the knowledge already available
+  across the project ecosystem (Jira, Confluence, existing Cypress specs,
+  API docs, PRDs) at generation time — not to replace the ticket, but to
+  complete it with real, traceable context.
+
+  Action
+  ──────
+  Smoky-RAG was built as a retrieval layer queried by Smoky right before
+  spec generation (Step 2 of the Smoky flow): continuous indexing of
+  sources (Jira, Confluence, Cypress spec repo, OpenAPI docs) into a
+  vector store, semantic search at the point of need, injection of the
+  relevant context into the Claude prompt, with systematic source citation
+  for every piece of context used.
+
+  Result — pain points solved
+  ────────────────────────────
+    | Pain point (before)                                | What Smoky-RAG changes  |
+    |------------------------------------------------------|----------------------------|
+    | Spec generated without knowing existing specs of      | Reuse of already        |
+    | the same module -> duplicates, inconsistencies        | validated patterns      |
+    | Business rules documented in a PRD but missing from   | PRD context injected    |
+    | the Jira ticket -> hallucination or coverage gap      | automatically           |
+    | API endpoints poorly guessed by Claude                 | API specs generated     |
+    |                                                        | from the real Swagger   |
+    | New QA/dev takes days to understand a module's         | Natural-language search |
+    | history                                                | answered in seconds     |
+    | Similar bug already encountered, nobody remembers      | Search for similar      |
+    | -> same bug rediscovered in prod                       | historical defects      |
+    | Impact of a release note on existing modules            | Automated regression    |
+    | assessed "by eye"                                      | scope analysis          |
+
+  Value delivered, by audience
+  ─────────────────────────────
+    - QA / SDET       : fewer "TODO: clarify with the team" markers in
+                         generated specs, context already there instead of
+                         being manually chased across 4 different tools.
+    - Dev / Eng        : Smoky asks better clarification questions on the
+                          ticket (via the existing "clarifications" step)
+                          because it has already read the PRD and
+                          neighboring specs.
+    - Business (PO/PM) : fewer regressions left uncovered because they
+                          were tied to a documented rule that never made
+                          it into the ticket.
+
+--------------------------------------------------------------------------------
+WHAT SMOKY-RAG IS (AND IS NOT)
+--------------------------------------------------------------------------------
+
+  Smoky-RAG IS:
+    - A retrieval -> generation pipeline called at Step 2 by spec_generator.py
+    - A continuously updated, vectorized knowledge base
+    - One tool among others that the Smoky agent uses
+
+  Smoky-RAG IS NOT:
+    - An autonomous agent (no planning, no decision loop)
+    - A replacement for the Jira ticket as the source of functional truth
+    - A guarantee of accuracy: RAGAS (already used for Smoky v1.0) keeps
+      measuring faithfulness between retrieved context and generated output
+
+--------------------------------------------------------------------------------
+ARCHITECTURE — RETRIEVAL
+--------------------------------------------------------------------------------
+
+  Indexed sources (based on the 8 target sources):
+
+    ┌─────────────────────────────────────────────────────────────────────┐
+    │  RETRIEVAL — Sources                                                │
+    │                                                                     │
+    │  📄 PRDs                    🔷 Jira tickets (resolved + historical) │
+    │  📋 User Stories            📘 Confluence (product/QA pages)        │
+    │  ✅ Existing Test Cases      📝 Release Notes                        │
+    │  </> API Docs (OpenAPI/Swagger) 📑 Requirements                     │
+    └─────────────────────────────────────────────────────────────────────┘
+
+  Ingestion pipeline:
+
+    Raw source ──▶ Extraction ──▶ Chunking ──▶ Embedding ──▶ Vector DB
+    (Jira/Confluence/  (text,         (by logical    (OpenAI /      (Chroma /
+     GitHub/Swagger)    tables,        section, ~300-  Voyage AI /   Qdrant /
+                        markdown)      500 tokens,     Claude        pgvector)
+                                       15% overlap)    Embeddings)
+
+  Sync frequency per source:
+    - Jira (resolved tickets + "smoky-ran-*" labels) : every 15 min
+    - Confluence (product + QA space)                 : every hour
+    - Cypress repo (already-generated/validated specs)  : on every merge (webhook)
+    - OpenAPI/Swagger docs                              : on every deployment
+    - PRDs (Confluence or Google Drive depending on project) : every hour
+
+  Metadata kept per chunk (for citation + filtering):
+    - source_type      (jira | confluence | cypress_spec | openapi | prd)
+    - source_id         (issue_key, page_id, file path, endpoint)
+    - module            (affected application component, if identifiable)
+    - last_updated
+    - url               (direct link to the source, for citation)
+
+--------------------------------------------------------------------------------
+ARCHITECTURE — AUGMENTED GENERATION
+--------------------------------------------------------------------------------
+
+  Called from spec_generator.py, right before the Step 2 Claude call:
+
+    ┌────────────────────────────────────────────────────────────────────┐
+    │  1. Raw Jira ticket (issue_key, description, acceptance criteria)  │
+    │  2. rag_retriever.query(ticket) -> top-k relevant chunks (k=5-8)   │
+    │  3. Reranking (cross-encoder or Claude) -> 3-4 most relevant chunks│
+    │  4. Injected into the Smoky system prompt, "CONTEXT" section       │
+    │  5. Claude generates the Cypress spec using ticket + RAG context   │
+    │  6. Every claim sourced from RAG is traced back to its origin      │
+    │     (comment // source: CONF-1284 in the .cy.ts when relevant)    │
+    └────────────────────────────────────────────────────────────────────┘
+
+  Prompt excerpt (addition to the existing Smoky system prompt):
+  ┌─────────────────────────────────────────────────────────────────────┐
+  │  RETRIEVED CONTEXT (Smoky-RAG):                                     │
+  │  [1] (jira PROJ-098, module: auth) "Login fails after 5 attempts    │
+  │      -> account locked for 15 min"                                  │
+  │  [2] (cypress_spec tests/auth/login.cy.ts) selectors already used:  │
+  │      [data-test="username"], [data-test="login-button"]             │
+  │  [3] (openapi POST /api/login) possible responses: 200, 401, 423    │
+  │                                                                       │
+  │  Use this context to enrich the spec if relevant to the ticket.     │
+  │  If any context item contradicts the ticket, prioritize the ticket  │
+  │  and flag the contradiction as a // RAG_CONFLICT comment.           │
+  └─────────────────────────────────────────────────────────────────────┘
+
+--------------------------------------------------------------------------------
+USE CASES (mapped to Smoky-RAG capabilities)
+--------------------------------------------------------------------------------
+
+  1. Faster test case generation
+     ─────────────────────────────
+     Using indexed PRDs and User Stories, Smoky-RAG enables generating more
+     complete Cypress specs in seconds, leveraging cases already covered
+     elsewhere to avoid duplication.
+
+  2. Better requirement analysis
+     ─────────────────────────────
+     Before generation, Smoky-RAG can flag missing details or ambiguities
+     in a ticket by comparing it against the associated PRD/Requirements —
+     feeding the "Claude requests clarifications" mechanism already planned
+     in Smoky v1.0 (Step 6, error handling).
+
+  3. Intelligent bug investigation
+     ────────────────────────────────
+     Search for similar historical defects in the indexed resolved Jira
+     tickets, to suggest a probable root cause when a Cypress test fails
+     (feeds the NL diagnosis from Step 5/Step 6).
+
+  4. Smarter regression testing
+     ─────────────────────────────
+     Analysis of indexed Release Notes to automatically identify impacted
+     modules from a change, and prioritize which specs to (re)generate or
+     (re)run accordingly.
+
+  5. API testing assistance
+     ─────────────────────────
+     Generation of test scenarios from the indexed OpenAPI/Swagger docs,
+     with validation of expected responses (HTTP codes, schemas) directly
+     in the generated Cypress specs.
+
+  6. Knowledge search
+     ────────────────────
+     Natural-language search interface across all indexed sources (Jira,
+     Confluence, docs, specs) — usable outside the Smoky flow too, e.g. via
+     a Slack slash-command "/smoky-ask".
+
+  7. Faster onboarding
+     ────────────────────
+     A new QA/dev can ask natural-language questions about the application
+     ("how does the login flow work?") and get a contextualized answer
+     sourced from the project's real documentation.
+
+--------------------------------------------------------------------------------
+TECH STACK
+--------------------------------------------------------------------------------
+
+  Component                 | Technology
+  ───────────────────────────|──────────────────────────────────────────
+  LLM (generation)           | Claude (Anthropic API) — claude-sonnet-4-6
+  Embeddings                  | Voyage AI (voyage-3) or Claude Embeddings
+  Vector store                 | Qdrant (self-hosted) or pgvector
+  Reranking                    | Cross-encoder (bge-reranker) or Claude
+  Orchestration                 | LangChain (retrievers) + LangGraph (RAG node)
+  Jira/Confluence ingestion      | Python · Jira API v3 · Confluence REST API
+  Cypress spec ingestion          | GitHub webhook (push to tests/generated/)
+  OpenAPI ingestion                | YAML/JSON parsing on every deployment
+  Observability                     | LangSmith (retrieval + generation traces)
+  Evaluation                         | RAGAS (faithfulness, context precision/recall)
+
+--------------------------------------------------------------------------------
+REPO FILE ARCHITECTURE (module integrated into the smoky/ repo)
+--------------------------------------------------------------------------------
+
+  smoky/
+  ├── rag/
+  │   ├── ingestion/
+  │   │   ├── jira_ingest.py          # Sync resolved tickets -> chunks
+  │   │   ├── confluence_ingest.py    # Sync product/QA pages -> chunks
+  │   │   ├── cypress_spec_ingest.py  # Sync validated specs -> chunks
+  │   │   ├── openapi_ingest.py       # Swagger parsing -> chunks
+  │   │   └── chunker.py              # Shared chunking + overlap logic
+  │   │
+  │   ├── retriever.py                # Vector search + reranking
+  │   ├── vector_store.py             # Qdrant/pgvector client
+  │   ├── embeddings.py               # Voyage AI / Claude Embeddings wrapper
+  │   └── prompt_context_builder.py   # Formats chunks for the prompt
+  │
+  ├── prompts/
+  │   └── rag_context_template.txt    # Context injection template
+  │
+  ├── evals/
+  │   └── ragas_eval.py               # Faithfulness / context precision
+  │
+  ├── .env.example                    # Additions below
+  └── config.yml                      # Add "rag:" section
+
+--------------------------------------------------------------------------------
+ENVIRONMENT VARIABLES (.env) — ADDITIONS TO SMOKY v1.0
+--------------------------------------------------------------------------------
+
+  # Embeddings
+  VOYAGE_API_KEY=pa-...
+  EMBEDDING_MODEL=voyage-3
+
+  # Vector store
+  QDRANT_URL=https://your-qdrant-instance:6333
+  QDRANT_API_KEY=...
+  QDRANT_COLLECTION=smoky_rag
+
+  # Confluence
+  CONFLUENCE_BASE_URL=https://yourcompany.atlassian.net/wiki
+  CONFLUENCE_EMAIL=you@company.com
+  CONFLUENCE_API_TOKEN=...
+  CONFLUENCE_SPACE_KEYS=PROD,QA
+
+  # OpenAPI
+  OPENAPI_SPEC_URL=https://your-api.com/openapi.json
+
+  # RAG tuning
+  RAG_TOP_K=8
+  RAG_RERANK_TOP_N=4
+  RAG_CHUNK_SIZE=400
+  RAG_CHUNK_OVERLAP=60
+
+--------------------------------------------------------------------------------
+ROADMAP — DEVELOPMENT PHASES
+--------------------------------------------------------------------------------
+
+  Phase 1 — RAG MVP (3-4 weeks)
+  ──────────────────────────────
+  ✓ Jira ingestion (resolved tickets) + Confluence (2 spaces)
+  ✓ Qdrant vector store, Voyage AI embeddings
+  ✓ Simple retriever (top-k, no reranking)
+  ✓ Context injection into the Smoky Step 2 prompt
+  ✓ Basic source citation as a .cy.ts comment
+
+  Phase 2 — Consolidation (4-6 weeks)
+  ─────────────────────────────────────────
+  ○ Ingestion of existing Cypress specs + OpenAPI docs
+  ○ Reranking (cross-encoder)
+  ○ Context/ticket contradiction detection (// RAG_CONFLICT)
+  ○ Continuous RAGAS evaluation (faithfulness, context precision/recall)
+  ○ Real-time sync via webhooks (instead of cron)
+
+  Phase 3 — Intelligence (6-10 weeks)
+  ─────────────────────────────────────────
+  ○ Search for similar historical bugs ("Intelligent Bug Investigation")
+  ○ Automated impact analysis of Release Notes on modules
+  ○ "/smoky-ask" Slack interface (natural-language Knowledge Search)
+  ○ Module-based filtering in retrieval
+  ○ RAG golden dataset (reference Q&A pairs) for benchmarking
+
+--------------------------------------------------------------------------------
+QUALITY CRITERIA — HOW TO EVALUATE SMOKY-RAG
+--------------------------------------------------------------------------------
+
+  Dimension                          | Target metric
+  ──────────────────────────────────────|──────────────────────────────────────
+  Faithfulness (RAGAS)                  | ≥ 0.85
+  Context precision (RAGAS)             | ≥ 0.80
+  Context recall (RAGAS)                | ≥ 0.75
+  Retrieval + reranking latency          | < 3 seconds (p95)
+  Index freshness                        | < 15 min (Jira) / < 1h (Confluence)
+  Rate of "// TODO: clarify" markers    | -30% vs Smoky v1.0 without RAG
+    in generated specs                  |
+  Hallucinations (invented source)      | 0 tolerated (blocked in CI)
+
+--------------------------------------------------------------------------------
+LINK WITH THE SMOKY v1.0 SPEC
+--------------------------------------------------------------------------------
+
+  Smoky-RAG plugs into the existing flow, between Step 1 (Jira detection)
+  and Step 2 (spec generation), without changing Steps 3 to 6:
+
+    Step 1 (Jira detection) ──▶ [Smoky-RAG: retrieval + rerank] ──▶
+    Step 2 (Cypress generation, enriched with RAG context) ──▶
+    Steps 3-6 (unchanged: CI, execution, reporting, error handling)
+
+  The RAGAS evaluation module, already planned in the Smoky v1.0 AI
+  Testing stack (Phase 4), becomes here the central measurement mechanism
+  for retrieval quality, not just generation quality.
+
+================================================================================
+END OF SPEC — SMOKY-RAG v1.0
+Kallitests · github.com/kallitests/smoky
+================================================================================
