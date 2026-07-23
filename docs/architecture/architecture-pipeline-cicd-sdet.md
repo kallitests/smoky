@@ -1,168 +1,181 @@
-# Architecture d'un Pipeline CI/CD de Test — De la User Story à l'Agent IA
+# CI/CD Test Pipeline Architecture — From User Story to Full Test Pyramid
 
-## Résumé exécutif
+> [!NOTE]
+> **Context document, not Smoky's own scope.** Smoky itself is deliberately narrow: it only generates and runs *smoke tests / pre-tests* (UI + API, happy path and unhappy path) on an app's most critical flows, to deliver a confidence verdict in under 5 minutes. This document describes the **broader, adjacent architecture** — the full non-regression / integration / validation test pyramid — that Smoky's smoke layer plugs into and that remains **the next layer to build on top of Smoky**, not a deliverable Smoky itself claims to own.
 
-L'objectif est de construire, à partir d'une **User Story**, un pipeline CI/CD complet et démontrable qui couvre tout le cycle de qualité logicielle : qualité de code en local (pre-commit), tests automatisés à tous les niveaux de la pyramide (unitaires, API, smoke, non-régression), exécution orchestrée en CI/CD (GitHub Actions / GitLab CI), reporting consolidé (Cucumber, Cypress Cloud, Power BI) et alerting multicanal (Teams, Slack, Discord, Gmail).
+## Executive summary
 
-Ce document n'est pas une simple liste d'outils : c'est une architecture pensée comme un **produit interne**, avec une traçabilité de bout en bout entre l'exigence métier (la User Story) et le résultat de test remonté au bon interlocuteur, au bon moment, sur le bon canal. C'est cette traçabilité qui constitue la fondation sur laquelle viendra se greffer, en phase 2, l'agent IA.
+The goal is to design, starting from a **User Story**, a complete and demonstrable CI/CD pipeline that covers the whole software-quality cycle: local code quality (pre-commit), automated tests at every level of the pyramid (unit, API, smoke, non-regression), orchestrated execution in CI/CD (GitHub Actions / GitLab CI), consolidated reporting (Cucumber, Cypress Cloud, Power BI), and multi-channel alerting (Teams, Slack, Discord, Gmail).
 
-Pitch en une phrase pour un recruteur : *"J'ai construit un pipeline qui transforme une User Story en tests exécutables, exécute ces tests à chaque commit, et informe automatiquement la bonne personne, avec la bonne donnée, sur le bon outil — le tout observable dans un dashboard business."*
+This document isn't just a list of tools: it's an architecture designed as an **internal product**, with end-to-end traceability between the business requirement (the User Story) and the test result reaching the right person, at the right time, on the right channel. That traceability is the foundation that Smoky's smoke-test agent layer sits on top of — Smoky owns the smoke slice of this pyramid; the rest (full non-regression, cross-browser, load) is the next layer to build.
 
----
-
-## 1. Principe fondateur : la User Story comme source de vérité unique
-
-Tout part de la User Story rédigée au format `En tant que... je veux... afin de...` accompagnée de critères d'acceptation au format Gherkin (`Given / When / Then`).
-
-**Pitch** : au lieu de considérer la User Story comme un simple ticket Jira, elle devient un **artefact versionné** dans le repository (dossier `features/`). Elle sert de contrat entre le Product Owner, le Dev et le QA. C'est cette discipline qui permettra plus tard à un LLM de lire la User Story et de générer automatiquement des scénarios Gherkin, puis des tests Cypress — la BDD n'est donc pas un choix stylistique, c'est le pont entre langage métier et langage machine.
-
-Chaque User Story est taguée dès la rédaction avec un niveau de criticité (`@smoke`, `@regression`, `@critical`, `@api`) qui pilotera ensuite la stratégie d'exécution en CI.
+One-line pitch: *"I built a pipeline that turns a User Story into executable tests, runs those tests on every commit, and automatically notifies the right person, with the right data, on the right tool — all observable in a business dashboard. Smoky is the AI agent that owns the smoke-test slice of that pipeline end to end."*
 
 ---
 
-## 2. Architecture globale — vue en couches
+## 1. Founding principle: the User Story as single source of truth
 
-L'architecture se lit en 5 couches, de la plus locale à la plus visible :
+Everything starts from the User Story, written as `As a... I want... so that...`, with acceptance criteria in Gherkin format (`Given / When / Then`).
 
-1. **Couche Qualité locale** (pre-commit) — bloque les erreurs avant même le push.
-2. **Couche Test** (pyramide de tests) — unitaire, API, UI smoke, UI régression.
-3. **Couche Orchestration CI/CD** (GitHub Actions / GitLab CI) — déclenche, parallélise, isole.
-4. **Couche Reporting** (Cucumber, Cypress Cloud, Power BI) — transforme la donnée brute en insight.
-5. **Couche Alerting** (Teams, Slack, Discord, Gmail) — pousse l'information vers l'humain sans qu'il ait à aller la chercher.
+**Why it matters**: rather than treating the User Story as a disposable Jira ticket, it becomes a **versioned artifact** in the repository (the `features/` folder). It acts as the contract between Product Owner, Dev, and QA. This discipline is what lets an LLM read the User Story and automatically generate Gherkin scenarios, then Cypress tests — BDD isn't a stylistic choice here, it's the bridge between business language and machine language. This is also the mechanism Smoky itself uses when grounding a generated smoke scenario in the ticket's real acceptance criteria.
 
-**Pitch** : cette séparation en couches est volontairement calquée sur une architecture d'entreprise réelle (observabilité + CI/CD + collaboration), ce qui permet de justifier chaque choix technique en entretien avec un vocabulaire d'architecte, pas seulement de testeur.
+Each User Story is tagged from the start with a criticality level (`@smoke`, `@regression`, `@critical`, `@api`) that later drives the CI execution strategy.
 
 ---
 
-## 3. Organisation du repository
+## 2. Global architecture — layered view
 
-Structure logique recommandée (description, pas de code) :
+The architecture reads in 5 layers, from most local to most visible:
 
-- `features/` : fichiers Gherkin, un fichier par User Story, nommage `US-XXX-nom-fonctionnalite.feature`
-- `cypress/e2e/` : step definitions et specs UI, organisées par domaine fonctionnel (pas par type de test)
-- `cypress/api/` : specs de tests API, séparées des tests UI pour permettre une exécution indépendante et plus rapide
-- `tests/unit/` : tests unitaires des fonctions utilitaires, des commandes custom Cypress, et de la logique métier front si applicable
-- `.github/workflows/` et `.gitlab-ci.yml` : pipelines, avec un fichier par déclencheur (PR, merge, nightly)
-- `.husky/` : hooks pre-commit et pre-push
-- `reports/` : sortie brute des rapports (ignorée par git, publiée en artefact CI)
-- `docs/architecture/` : ce type de document, versionné et vivant
+1. **Local quality layer** (pre-commit) — blocks errors before they're even pushed.
+2. **Test layer** (test pyramid) — unit, API, UI smoke, UI regression.
+3. **CI/CD orchestration layer** (GitHub Actions / GitLab CI) — triggers, parallelizes, isolates.
+4. **Reporting layer** (Cucumber, Cypress Cloud, Power BI) — turns raw data into insight.
+5. **Alerting layer** (Teams, Slack, Discord, Gmail) — pushes information to humans instead of making them go find it.
 
-**Pitch** : séparer physiquement API/UI/unitaire permet des pipelines à vitesses différentes — un recruteur technique appréciera que la vitesse de feedback soit un critère de conception, pas un hasard.
+**Note**: this layered separation is deliberately modeled on a real enterprise architecture (observability + CI/CD + collaboration). Smoky's own smoke-test agent lives inside layers 2-5, scoped to the `@smoke` tier only; the rest of each layer (full regression, broader reporting, broader alerting) belongs to this wider pipeline, built independently of Smoky.
 
 ---
 
-## 4. Étape 1 — Qualité de code locale (pre-commit)
+## 3. Repository organization
 
-Avant qu'un seul test ne tourne en CI, la qualité est vérifiée localement via des hooks Git :
+Recommended logical structure (description, not code):
 
-- **Pre-commit** : linter (ESLint avec règles Cypress/Testing Library dédiées), formatteur (Prettier), vérification des fichiers stagés uniquement (lint-staged) pour rester rapide.
-- **Commit-msg** : validation du format de commit (Conventional Commits : `feat`, `fix`, `test`, `chore`...) — ce format sera réutilisé plus tard pour générer un changelog automatique et alimenter les métriques DORA.
-- **Pre-push** : exécution des tests unitaires et d'un sous-ensemble de smoke tests critiques, pour éviter de polluer la CI avec des erreurs évidentes.
+- `features/`: Gherkin files, one per User Story, named `US-XXX-feature-name.feature`
+- `cypress/e2e/`: UI step definitions and specs, organized by functional domain (not by test type)
+- `cypress/api/`: API test specs, kept separate from UI tests to allow independent, faster execution
+- `tests/unit/`: unit tests for utility functions, custom Cypress commands, and front-end business logic where applicable
+- `.github/workflows/` and `.gitlab-ci.yml`: pipelines, one file per trigger (PR, merge, nightly)
+- `.husky/`: pre-commit and pre-push hooks
+- `reports/`: raw report output (git-ignored, published as a CI artifact)
+- `docs/architecture/`: this kind of document, versioned and kept current
 
-**Pitch** : le principe directeur est "*fail fast, fail local*". Chaque minute économisée en local est une minute de CI économisée, et c'est un argument fort en entretien : ça montre une conscience du coût réel (temps, argent, frustration des devs) d'une CI mal pensée.
-
----
-
-## 5. Étape 2 — La pyramide de tests
-
-### 5.1 Tests unitaires
-Ciblent la logique pure : commandes Cypress custom, helpers, transformateurs de données, fixtures dynamiques. Exécutés à chaque commit, en quelques secondes, avec un seuil de couverture minimal comme quality gate (ex. 80%).
-
-### 5.2 Tests API
-Valident les contrats d'interface indépendamment de l'UI (statuts HTTP, schémas de réponse, temps de réponse, cas d'erreur). Exécutés en tout premier dans le pipeline car rapides et peu coûteux — s'ils échouent, inutile de lancer les tests UI qui dépendent des mêmes services.
-
-### 5.3 Smoke tests
-Sous-ensemble minimal et critique du parcours utilisateur (connexion, création d'une ressource clé, parcours d'achat...). Taggés `@smoke` dès la User Story. Objectif : moins de 5 minutes d'exécution, déclenchés sur **chaque Pull Request**.
-
-### 5.4 Tests de non-régression
-Suite complète couvrant l'ensemble des parcours et cas limites. Plus longue, exécutée sur merge vers la branche principale et en nightly build, avec parallélisation et exécution cross-navigateur.
-
-### 5.5 Le lien BDD ↔ User Story
-Chaque scénario Gherkin est directement traçable à sa User Story d'origine. Les step definitions Cypress implémentent ces scénarios sans dupliquer la logique métier déjà décrite. Cucumber devient ainsi le langage commun entre le rapport de test et le ticket produit.
-
-**Pitch de la pyramide** : la stratégie n'est pas "tout tester partout tout le temps" mais "le bon niveau de test au bon moment du cycle de vie du code" — c'est l'argument qui différencie un SDET senior d'un testeur qui clique un bouton "Run all".
+**Note**: physically separating API/UI/unit tests enables pipelines running at different speeds — feedback speed is a design criterion here, not an accident.
 
 ---
 
-## 6. Étape 3 — Pipeline CI/CD (GitHub Actions & GitLab CI)
+## 4. Step 1 — Local code quality (pre-commit)
 
-### 6.1 Stratégie de déclenchement
-- **Sur Pull Request** : lint + tests unitaires + tests API + smoke tests UI → feedback en moins de 10 minutes.
-- **Sur merge vers `main`** : suite de non-régression complète + tests API étendus + build de l'artefact de reporting.
-- **Nightly / planifié** : suite complète cross-navigateur, tests de charge légers, audit de dépendances.
-- **Manuel (workflow_dispatch)** : possibilité de relancer une suite ciblée par tag, utile en démo devant un recruteur.
+Before a single test runs in CI, quality is checked locally via Git hooks:
 
-### 6.2 Structure des jobs
-Les jobs sont découpés pour maximiser le parallélisme : un job "qualité" (lint/format), un job "unitaire", un job "API", un job "UI smoke", un job "UI régression" sharded sur plusieurs runners. Chaque job publie ses résultats comme artefact CI indépendamment, pour que l'échec d'un job n'empêche pas la remontée des résultats des autres.
+- **Pre-commit**: linter (ESLint with dedicated Cypress/Testing Library rules), formatter (Prettier), staged-files-only check (lint-staged) to stay fast.
+- **Commit-msg**: commit format validation (Conventional Commits: `feat`, `fix`, `test`, `chore`...) — this format is later reused to generate an automatic changelog and feed DORA metrics.
+- **Pre-push**: runs unit tests and a subset of critical smoke tests, to avoid polluting CI with obvious errors.
 
-### 6.3 Isolation et environnements
-Utilisation de conteneurs Docker pour garantir la reproductibilité (même image en local, en CI, et pour la démo). Gestion différenciée des environnements (dev/staging) via des fichiers de configuration Cypress dédiés et des secrets stockés dans le gestionnaire de secrets natif de la plateforme CI (jamais en clair dans le repo).
+**Note**: the guiding principle is "*fail fast, fail local*." Every minute saved locally is a minute of CI saved.
+
+---
+
+## 5. Step 2 — The test pyramid
+
+### 5.1 Unit tests
+Target pure logic: custom Cypress commands, helpers, data transformers, dynamic fixtures. Run on every commit, in seconds, with a minimum coverage threshold as a quality gate (e.g. 80%).
+
+### 5.2 API tests
+Validate interface contracts independently of the UI (HTTP statuses, response schemas, response times, error cases). Run first in the pipeline because they're fast and cheap — if they fail, there's no point running UI tests that depend on the same services.
+
+### 5.3 Smoke tests — Smoky's scope
+Minimal, critical subset of the user journey (login, creating a key resource, checkout flow...), covering happy paths and their unhappy-path counterparts. Tagged `@smoke` from the User Story onward. Target: under 5 minutes of execution, triggered on **every Pull Request**. **This is the layer Smoky, the AI agent described in the main [README](../../README.md) and [spec](../specs/smoky-spec-v1-en.txt), owns end to end** — from reading the Jira ticket to publishing the verdict.
+
+### 5.4 Non-regression tests — the next layer beyond Smoky
+Full suite covering the complete set of journeys and edge cases. Longer-running, executed on merge to the main branch and in nightly builds, with parallelization and cross-browser execution. **Out of Smoky's current scope by design** — this is the layer to build on top of what Smoky delivers, not something Smoky generates or maintains today.
+
+### 5.5 The BDD ↔ User Story link
+Each Gherkin scenario is directly traceable back to its source User Story. Cypress step definitions implement these scenarios without duplicating business logic already described elsewhere. Cucumber becomes the shared language between the test report and the product ticket.
+
+**Pyramid principle**: the strategy isn't "test everything everywhere all the time" but "the right level of test at the right point in the code's lifecycle."
+
+---
+
+## 6. Step 3 — CI/CD pipeline (GitHub Actions & GitLab CI)
+
+### 6.1 Trigger strategy
+- **On Pull Request**: lint + unit tests + API tests + smoke UI tests → feedback in under 10 minutes. This is the trigger Smoky's own `smoky.yml` workflow participates in.
+- **On merge to `main`**: full non-regression suite + extended API tests + reporting artifact build.
+- **Nightly / scheduled**: full cross-browser suite, light load tests, dependency audit.
+- **Manual (workflow_dispatch)**: ability to re-run a tag-filtered suite on demand.
+
+### 6.2 Job structure
+Jobs are split to maximize parallelism: a "quality" job (lint/format), a "unit" job, an "API" job, a "UI smoke" job, and a "UI regression" job sharded across multiple runners. Each job publishes its results as an independent CI artifact, so one job's failure doesn't block the others' results from surfacing.
+
+### 6.3 Isolation and environments
+Docker containers guarantee reproducibility (same image locally, in CI, and for demos) — this is also why Smoky's own Cypress pipeline is dockerized, multi-stage, and runs as a non-root user. Environments (dev/staging) are handled via dedicated Cypress config files and secrets stored in the CI platform's native secret manager (never in plaintext in the repo).
 
 ### 6.4 Quality gates
-Le pipeline bloque la fusion si : couverture de tests unitaires sous le seuil, lint en échec, un smoke test critique rouge, ou un taux de flakiness anormal détecté sur les dernières exécutions. Ces règles sont configurées comme "required checks" sur la branche protégée.
+The pipeline blocks a merge if: unit test coverage falls below threshold, lint fails, a critical smoke test is red, or an abnormal flakiness rate is detected across recent runs. These rules are configured as required checks on the protected branch.
 
-**Pitch** : présenter le pipeline comme une **suite de portes de qualité progressives** plutôt qu'un bloc monolithique permet de raconter une histoire claire en entretien : "je sais dimensionner un pipeline pour qu'il donne du feedback vite sans sacrifier la rigueur sur le long terme."
+**Note**: framing the pipeline as a **series of progressive quality gates** rather than a single monolithic block tells a clear story: a pipeline sized to give fast feedback without sacrificing long-term rigor.
 
 ---
 
-## 7. Étape 4 — Reporting consolidé
+## 7. Step 4 — Consolidated reporting
 
 ### 7.1 Cucumber Reports
-Génération d'un rapport HTML lisible par un profil non-technique (Product Owner), organisé par feature/scénario, avec captures d'écran attachées aux étapes en échec.
+Generates an HTML report readable by a non-technical audience (Product Owner), organized by feature/scenario, with screenshots attached to failing steps.
 
 ### 7.2 Cypress Cloud (cypress.io)
-Centralisation des exécutions, replay vidéo des échecs, détection automatique de flakiness, analytics de tendance sur la durée d'exécution — sert de source de vérité technique pour l'équipe QA/Dev.
+Centralizes runs, video replay of failures, automatic flakiness detection, execution-time trend analytics — serves as the technical source of truth for the QA/Dev team, mainly for the non-regression suite described in 5.4.
 
-### 7.3 Power BI — le pont vers le reporting business
-Les résultats structurés (issus des exports JSON/JUnit de Cucumber et Cypress) sont poussés vers un espace de stockage intermédiaire (ex. base de données ou fichier partagé), puis consommés par Power BI via un connecteur ou une actualisation planifiée. Le modèle sémantique expose des indicateurs comme : taux de succès par module, temps d'exécution moyen, taux de flakiness, nombre de régressions par sprint, corrélation entre User Story et taux d'échec.
+### 7.3 Power BI — the bridge to business reporting
+Structured results (from Cucumber and Cypress JSON/JUnit exports) are pushed to an intermediate store — for Smoky's own smoke-test results this is Redis, which also historizes flakiness — then consumed by Power BI via a connector or scheduled refresh. The semantic model exposes metrics such as: pass rate per module, average execution time, flakiness rate, number of regressions per sprint, correlation between User Story and failure rate.
 
-**Pitch** : la présence de Power BI est ce qui distingue ce portfolio d'un simple projet Cypress — cela montre la capacité à parler à un public non-technique (management, product) avec des KPIs business, une compétence rare chez les SDET.
-
----
-
-## 8. Étape 5 — Alerting intelligent et multicanal
-
-Le principe directeur est le **routage par sévérité et par audience**, pas la diffusion en masse du même message partout :
-
-- **Slack / Teams** : notifications techniques en temps réel dans les canaux d'équipe dev/QA à chaque échec de pipeline, avec lien direct vers le run et la vidéo de l'échec.
-- **Discord** : canal dédié à la démo/portfolio, utile pour montrer en entretien un webhook custom avec embed formaté (statut, durée, lien).
-- **Gmail** : rapport de synthèse quotidien ou hebdomadaire (digest), destiné à un public moins technique, avec le résumé Cucumber en pièce jointe.
-- **Escalade conditionnelle** : un échec sur un smoke test critique déclenche une alerte immédiate et distincte d'un échec sur un test de régression secondaire — logique de priorisation intégrée au pipeline plutôt que laissée à l'humain.
-
-**Pitch** : l'alerting n'est pas "brancher un webhook", c'est concevoir **qui a besoin de savoir quoi, sous quelle forme, à quelle fréquence** — c'est un raisonnement produit appliqué à un pipeline technique, encore un signal fort en entretien.
+**Note**: Power BI is what distinguishes this from a plain Cypress project — it shows the ability to speak to a non-technical audience (management, product) with business KPIs.
 
 ---
 
-## 9. Observabilité et métriques
+## 8. Step 5 — Intelligent, multi-channel alerting
 
-Au-delà du pass/fail, le pipeline doit exposer des métriques de pilotage :
+The guiding principle is **routing by severity and by audience**, not broadcasting the same message everywhere:
 
-- Taux de flakiness par test (pour identifier les tests à réécrire).
-- Temps d'exécution moyen par suite (pour détecter la dérive de performance).
-- Indicateurs DORA adaptés au test (fréquence de déploiement, temps moyen de détection d'une régression, temps moyen de résolution).
-- Corrélation entre complexité de la User Story et taux d'échec des tests associés.
+- **Slack / Teams**: real-time technical notifications in dev/QA team channels on every pipeline failure, with a direct link to the run and the failure video. This is Smoky's primary channel for `@smoke`/`@critical` results.
+- **Discord**: dedicated demo/portfolio channel, useful to show a custom webhook with a formatted embed (status, duration, link).
+- **Gmail**: daily or weekly summary report (digest), aimed at a less technical audience, batched rather than sent per-failure.
+- **Conditional escalation**: a failure on a critical smoke test triggers an immediate, distinct alert from a failure on a secondary regression test — prioritization logic built into the pipeline rather than left to a human. Smoky implements this today: severity-based routing across Slack/Teams/Discord plus the batched Gmail digest.
 
-**Pitch** : mesurer la qualité du pipeline lui-même (et pas seulement la qualité du produit testé) est ce qui permet de dire en entretien "je sais faire évoluer un système de test dans le temps, pas seulement l'écrire une fois."
-
----
-
-## 10. Sécurité et gouvernance
-
-- Aucun secret en clair : utilisation exclusive des gestionnaires de secrets CI natifs.
-- Scan automatique des dépendances (audit npm, Dependabot ou équivalent) intégré en pipeline hebdomadaire.
-- Permissions minimales sur les tokens utilisés par les workflows (principe du moindre privilège).
-- Séparation stricte entre les webhooks de démo (Discord) et les canaux de production (Slack/Teams) pour éviter toute fuite d'information réelle pendant une démonstration.
+**Note**: alerting here isn't "wire up a webhook" — it's deciding **who needs to know what, in what form, at what frequency**.
 
 ---
 
-## 11. Roadmap — Vers l'agent IA (Phase 2)
+## 9. Observability and metrics
 
-Ce pipeline est conçu comme un socle sur lequel un agent IA viendra se greffer, avec des capacités progressives :
+Beyond pass/fail, the pipeline should expose steering metrics:
 
-1. **Génération de scénarios** : lecture d'une User Story en langage naturel et génération automatique du fichier Gherkin correspondant.
-2. **Génération de tests** : à partir du Gherkin, proposition automatique des step definitions Cypress (UI et API) à valider par le SDET.
-3. **Auto-triage des échecs** : analyse automatique des logs/vidéos d'échec pour distinguer un vrai bug d'une régression liée à l'environnement (flakiness), avec résumé en langage naturel envoyé sur Slack/Teams.
-4. **Auto-réparation des sélecteurs** : détection des sélecteurs UI cassés par un changement de DOM et proposition de correctif (self-healing tests).
-5. **Rapport narratif automatique** : génération d'un résumé exécutif en langage naturel du run de test, injecté directement dans le mail de synthèse et le rapport Power BI.
+- Flakiness rate per test (to identify tests that need rewriting) — historized in Redis for Smoky's smoke layer.
+- Average execution time per suite (to detect performance drift).
+- DORA-style indicators adapted to testing (deployment frequency, mean time to detect a regression, mean time to resolve).
+- Correlation between User Story complexity and the failure rate of its associated tests.
 
-**Pitch final pour l'entretien** : *"Ce que je montre aujourd'hui, c'est un pipeline CI/CD de test complet et industrialisé. Ce que je peux construire ensuite avec ce socle, c'est un agent qui ferme la boucle entre l'expression du besoin métier et la validation automatisée de sa réalisation — sans intervention humaine pour les tâches répétitives, avec l'humain gardé dans la boucle pour les décisions à enjeu."*
+**Note**: measuring the quality of the pipeline itself (not just the quality of the product under test) is what lets you say "I know how to evolve a test system over time, not just write it once." This is also why Smoky's own output is continuously evaluated with DeepEval, RAGAS, and Promptfoo — see the [README](../../README.md#-roadmap) and [spec](../specs/smoky-spec-v1-en.txt).
+
+---
+
+## 10. Security and governance
+
+- No plaintext secrets: exclusive use of native CI secret managers.
+- Automatic dependency scanning (npm audit, Dependabot or equivalent) integrated in a weekly pipeline.
+- Minimal permissions on tokens used by workflows (least-privilege principle).
+- Strict separation between demo webhooks (Discord) and production channels (Slack/Teams) to avoid leaking real information during a demo.
+
+---
+
+## 11. Roadmap — where Smoky fits, and what's beyond it
+
+This pipeline is designed as a foundation with two things layered on top of it, at different scopes:
+
+**Already delivered by Smoky (see the [README](../../README.md) and [spec](../specs/smoky-spec-v1-en.txt)):**
+
+1. **Scenario generation** — reads a User Story in natural language and generates the corresponding Cypress smoke spec, grounded in the Gherkin acceptance criteria and the target app's real code.
+2. **Self-validation** — scores its own output before triggering (consistency check, hallucination detection).
+3. **Dockerized execution** — multi-stage, non-root Cypress pipeline via GitHub Actions.
+4. **Result publishing** — Slack, Power BI (Redis-historized flakiness), and the Jira ticket itself.
+5. **Severity-based alerting** — Slack/Teams/Discord plus a batched Gmail digest.
+6. **Continuous self-evaluation** — Smoky's own output is scored with DeepEval, RAGAS, and Promptfoo.
+
+**Still to build, beyond Smoky's current scope (the next layer):**
+
+1. **Full non-regression / integration / validation suite** — the complete pyramid described in section 5.4, not just the `@smoke` slice.
+2. **Auto-triage of failures** — automatic analysis of failure logs/videos to distinguish a real bug from environment-related flakiness, with a natural-language summary sent to Slack/Teams.
+3. **Self-healing selectors** — detection of UI selectors broken by a DOM change, with a proposed fix.
+4. **Automatic narrative reporting** — natural-language executive summary of a test run, injected directly into the digest email and the Power BI report.
+
+**Closing note**: *"What Smoky demonstrates today is a narrow but complete AI agent that owns the smoke-test slice of a CI/CD test pipeline, end to end — no human writing or babysitting the scripts. What comes next, on the same foundation, is the full non-regression/integration/validation layer, plus deeper self-healing and auto-triage capabilities — with a human kept in the loop for the decisions that matter."*

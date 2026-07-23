@@ -1,9 +1,14 @@
-# 🤖 Smoky — Autonomous Smoke Test Agent
+# 🤖 Smoky — Autonomous AI Agent for Cypress Smoke Tests
+
+> [!NOTE]
+> **Personal side project**, built independently for the portfolio of my microenterprise **Kallitests** — outside of any client engagement. Core expertise stays Cypress test automation; Smoky adds an agentic AI layer on top of it, plus a dockerized CI/CD chain that industrializes the whole thing.
 
 > [!WARNING]
 > **🚧 Work in Progress** — This project is under active construction. Some features described below (Phase 2/3/4 of the roadmap) are not fully implemented yet. Expect breaking changes, incomplete modules, and evolving docs. Not production-ready.
 
-> **A Claude-powered agent that watches your Jira board 24/7, writes Cypress smoke test specs from User Stories, runs them through a Dockerized Cypress pipeline, and publishes results to Slack and Power BI — zero human intervention.**
+> **A Claude-powered agent that watches your Jira board 24/7, turns User Stories into verified Cypress smoke tests, runs them through a Dockerized Cypress pipeline, and publishes results to Slack, Power BI, and the ticket itself — a confidence verdict in under 5 minutes, zero human intervention.**
+
+**Scope, on purpose:** Smoky only writes and runs *smoke tests / pre-tests* — UI and API — covering happy paths and their opposite, unhappy paths (error cases, edge cases), on an app's most critical flows. The goal is a fast confidence verdict, not exhaustive coverage. A full non-regression / integration / validation suite is the next layer to build on top of what Smoky delivers, not something Smoky claims to replace.
 
 [![Status](https://img.shields.io/badge/status-work%20in%20progress-red?style=flat-square&logo=progress)](#-why-this-project-exists-star)
 
@@ -68,6 +73,8 @@ Smoky was built as an autonomous Claude agent that watches Jira, converts User S
 - **IT / Engineering** — one less manual step in the delivery pipeline, dockerized and CI-native, plugs into GitHub Actions without touching existing infrastructure.
 - **Business (PO / PM / CEO)** — faster time-to-confidence on every release, fewer production incidents, and a dashboard that turns "is quality okay?" from a meeting question into a live number.
 - **QA team** — freed from repetitive scripting to focus on high-value testing, with an AI teammate that documents its own reasoning and flags what it's unsure about instead of guessing silently.
+
+The value add is **Cypress + DevOps + AI**: Cypress automation is the core skill, GitHub Actions and Docker industrialize it end to end, and the agentic AI layer generates, validates, and maintains the smoke scenarios continuously — no human writing or babysitting scripts.
 
 This project isn't a toy demo — it's a working answer to a question every engineering org eventually asks: *can we trust an AI to test our software, and how do we prove it?*
 
@@ -211,7 +218,7 @@ Retrieval quality is evaluated with **RAGAS** — faithfulness ≥ 0.85, context
 | Local quality gate | Husky · lint-staged · ESLint · Prettier · commitlint (Conventional Commits) |
 | Containerization | Docker · `cypress/browsers` |
 | CI/CD | GitHub Actions — `pr.yml` / `main.yml` / `nightly.yml` / `smoky.yml` (`repository_dispatch`) |
-| Reporting | Power BI REST API · Slack Incoming Webhooks · `cypress-mochawesome-reporter` · Cypress Cloud (regression sharding) |
+| Reporting | Power BI REST API (flakiness history in Redis) · Slack Incoming Webhooks · `cypress-mochawesome-reporter` · Cypress Cloud (used by the adjacent, non-regression full-pyramid tooling below) |
 | Observability | [LangSmith](https://smith.langchain.com) · Cypress screenshots/videos |
 | Evaluation | [DeepEval](https://deepeval.com) · RAGAS |
 | RAG — embeddings | [Voyage AI](https://www.voyageai.com) (`voyage-3`) |
@@ -227,9 +234,9 @@ Retrieval quality is evaluated with **RAGAS** — faithfulness ≥ 0.85, context
 smoky-cypress/
 ├── .github/
 │   └── workflows/
-│       ├── smoky.yml               # Jira-agent dispatch + manual tag-filtered run
+│       ├── smoky.yml               # Jira-agent dispatch + manual tag-filtered run — Smoky's own smoke-test pipeline
 │       ├── pr.yml                  # PR: lint + unit + API + smoke (parallel jobs)
-│       ├── main.yml                # Merge-to-main: full regression (Cypress Cloud)
+│       ├── main.yml                # Merge-to-main: full regression (Cypress Cloud) — adjacent to Smoky, the "next layer" beyond smoke scope
 │       └── nightly.yml             # Nightly: cross-browser + dependency audit
 │
 ├── .husky/
@@ -316,7 +323,9 @@ smoky-cypress/
 
 ## 📗 Example User Story — US-001 Login/Logout
 
-Demonstrates the full pyramid end to end against
+Demonstrates the smoke layer Smoky owns, plus the adjacent full-pyramid
+tooling (unit/API/regression) this repo also carries as a demo of the "next
+layer" mentioned above, against
 [cypress-realworld-app](https://github.com/cypress-io/cypress-realworld-app)
 (selectors/routes grounded in its real source, not invented):
 

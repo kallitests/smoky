@@ -1,15 +1,28 @@
 ================================================================================
   SMOKY — TECHNICAL SPEC v1.0
   Autonomous Claude smoke test agent · Routine Agent
+  Personal side project, built independently for the portfolio of the
+  Kallitests microenterprise — outside of any client engagement.
   Author: Kallitests
 ================================================================================
 
 VISION
 ------
 Smoky is an autonomous Claude agent that continuously monitors Jira
-tickets, generates runnable Cypress specs directly from User Stories, runs
-them in a dockerized Cypress pipeline via GitHub Actions, and publishes the
-results to Power BI + Slack — with no human intervention.
+tickets, generates verified Cypress smoke tests (UI + API, happy path and
+unhappy path) grounded in the target app's real code, runs them in a
+dockerized (multi-stage, non-root) Cypress pipeline via GitHub Actions, and
+publishes the results to Slack, Power BI (flakiness historized in Redis),
+and the Jira ticket — with no human intervention.
+
+Scope is deliberately narrow: smoke tests / pre-tests only, on the app's
+most critical flows, to deliver a confidence verdict in under 5 minutes —
+not exhaustive coverage. The full non-regression / integration / validation
+suite is the next layer to build on top of Smoky, not something this project
+claims to own. The value add is Cypress + DevOps + AI: Cypress automation
+stays the core skill; Smoky's agentic AI layer generates, validates, and
+maintains the scenarios continuously, on a dockerized CI/CD chain that
+industrializes the whole thing.
 
 A dev creates a ticket. Smoky does the rest.
 
@@ -161,9 +174,18 @@ STEP 1 — JIRA TICKET DETECTION
 STEP 2 — CYPRESS SPEC GENERATION BY CLAUDE
 ────────────────────────────────────────────
 
-  Input: raw Jira ticket content (JSON)
-  Output: runnable Cypress .cy.ts spec file (no Gherkin/BDD intermediate —
-          Claude writes the test code directly)
+  Input: raw Jira ticket content (JSON), including the acceptance criteria
+         already written in Gherkin (Given/When/Then) on the ticket
+  Output: runnable Cypress .cy.ts spec file, grounded in that Gherkin and in
+          the target app's real code (real selectors/routes, not invented)
+
+  NOTE: for this agent's fully-autonomous per-ticket flow, Claude reads the
+  ticket's Gherkin acceptance criteria and writes the equivalent Cypress
+  test code directly — no separate step-definition/BDD layer is maintained
+  for speed. Hand-authored, higher-value stories keep full Gherkin +
+  step-definition traceability (see features/ and
+  docs/architecture/architecture-pipeline-cicd-sdet.md). Both paths ground
+  the generated test in the same source of truth: the Gherkin criteria.
 
   Claude system prompt (simplified):
   ┌─────────────────────────────────────────────────────────────────────┐
@@ -256,16 +278,24 @@ STEP 4 — DOCKERIZED CYPRESS EXECUTION
 ───────────────────────────────────────
 
   Docker image: cypress/browsers:node20.16.0-chrome127-ff128
+  Build: multi-stage (deps → build → runtime), final stage runs as a
+         non-root user — no container in the pipeline runs as root.
 
-  Smoky Dockerfile:
+  Smoky Dockerfile (simplified, non-root runtime stage):
   ┌────────────────────────────────────────────────────────────────────┐
-  │  FROM cypress/browsers:node20.16.0-chrome127-ff128                │
+  │  FROM cypress/browsers:node20.16.0-chrome127-ff128 AS deps         │
   │  WORKDIR /app                                                      │
   │  COPY package*.json ./                                             │
   │  RUN npm ci                                                        │
+  │                                                                    │
+  │  FROM deps AS runtime                                              │
+  │  WORKDIR /app                                                      │
   │  COPY . .                                                          │
   │  ENV CI=true                                                       │
   │  ENV BASE_URL=${BASE_URL}                                          │
+  │  RUN groupadd -r smoky && useradd -r -g smoky smoky \\             │
+  │      && chown -R smoky:smoky /app                                  │
+  │  USER smoky                                                        │
   │  CMD ["npx", "cypress", "run", "--browser", "chrome",             │
   │        "--env", "grepTags=@smoke"]                                 │
   └────────────────────────────────────────────────────────────────────┘
@@ -311,15 +341,21 @@ STEP 5 — OUTPUTS: POWER BI + SLACK + JIRA
     - Rate per ticket / per application module
     - 30-day trend (regression detected?)
     - Average execution duration
-    - Most unstable tickets (flaky score)
+    - Most unstable tickets (flaky score, historized in Redis — last 20
+      runs per test, see agent/flakiness_tracker.py)
     - History per environment (staging / preprod / prod)
 
   Refresh:
     POST https://api.powerbi.com/v1.0/myorg/datasets/{id}/refreshes
 
-  B) Slack — Natural-language report
-  ────────────────────────────────────
-  Claude generates the Slack message from the results JSON.
+  B) Slack / Teams / Discord — Natural-language report + severity routing
+  ─────────────────────────────────────────────────────────────────────
+  Claude generates the Slack message from the results JSON. Alerting is
+  routed by severity and audience, not broadcast identically everywhere:
+    - Slack (#smoky-results) — every run, primary channel
+    - Teams / Discord — @critical failures only (optional webhooks)
+    - Gmail — batched digest (daily/weekly), non-critical, less-technical
+      audience (see agent/send_digest.py)
 
   Slack message template:
 
@@ -360,10 +396,12 @@ STEP 6 — ERROR HANDLING (ROBUSTNESS)
   |                              | // SMOKY_UNCERTAIN in the .cy.ts spec |
   | LLM timeout (>30s)           | Retry x3 then Slack alert             |
   | GitHub Actions failure       | Automatic re-run x1 then escalation   |
-  | Flaky test (>2 unstable runs)| Marked @flaky + separate report       |
+  | Flaky test (>2 unstable runs)| Marked @flaky + separate report,      |
+  |                              | tracked in Redis                      |
   | Cypress timeout              | Screenshot + Claude NL diagnosis      |
   | Power BI API down            | CSV fallback in CI artifacts          |
-  | Slack webhook down           | Email fallback to configured address  |
+  | Slack webhook down           | Falls back to Teams/Discord if        |
+  |                              | configured, else Gmail digest         |
 
 --------------------------------------------------------------------------------
 TECH STACK
@@ -380,10 +418,11 @@ TECH STACK
   CI/CD                     | GitHub Actions (repository_dispatch)
   Test execution             | Cypress · TypeScript · @cypress/grep
   Containerization           | Docker · cypress/browsers
-  Reporting                 | Power BI API · Azure Blob Storage
-  Notifications              | Slack API (Incoming Webhooks)
+  Reporting                 | Power BI API · Azure Blob Storage · Redis (flakiness history)
+  Notifications              | Slack / Teams / Discord webhooks · Gmail (batched digest)
   Secrets management          | GitHub Secrets · .env
   Observability               | LangSmith (LLM traces) · Cypress screenshots/videos
+  Continuous self-evaluation  | DeepEval · RAGAS · Promptfoo
 
 --------------------------------------------------------------------------------
 REPO FILE ARCHITECTURE
@@ -450,14 +489,22 @@ ENVIRONMENT VARIABLES (.env)
   BASE_URL_STAGING=https://staging.app.com
   BASE_URL_PREPROD=https://preprod.app.com
 
-  # Slack
+  # Slack / Teams / Discord / Gmail
   SLACK_WEBHOOK_URL=https://hooks.slack.com/services/...
   SLACK_CHANNEL=#smoky-results
+  TEAMS_WEBHOOK_URL=...            # optional — @critical alerts
+  DISCORD_WEBHOOK_URL=...          # optional — @critical alerts
+  GMAIL_ADDRESS=...                # optional — batched digest
+  GMAIL_APP_PASSWORD=...
+  GMAIL_DIGEST_TO=...
 
   # Power BI
   POWERBI_DATASET_ID=...
   POWERBI_WORKSPACE_ID=...
   POWERBI_ACCESS_TOKEN=...
+
+  # Redis (flakiness history)
+  REDIS_URL=redis://...
 
   # LangSmith (observability)
   LANGCHAIN_API_KEY=...
@@ -554,7 +601,8 @@ QUALITY CRITERIA — HOW TO EVALUATE SMOKY
   Spec/Story consistency        | Claude self-critique score ≥ 8/10
   Hallucinations                 | 0 uncommented invented selectors
   Coverage                       | 1 Happy Path + 1 negative case minimum
-  Detection → results delay      | < 10 minutes end-to-end
+  Detection → confidence verdict | < 5 minutes end-to-end (goal, not
+                                  | exhaustive coverage)
   Flakiness                      | < 5% unstable tests over 30 days
   Agent availability             | 24/7 · 99% tolerance
   Prompt regression               | Alert if average score drops > 1 point
